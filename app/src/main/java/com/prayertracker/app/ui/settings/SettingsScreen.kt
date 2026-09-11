@@ -47,6 +47,8 @@ fun SettingsScreen(
     val settings by viewModel.settings.collectAsState()
     val isSyncing by viewModel.isSyncing.collectAsState()
     val syncMessage by viewModel.syncMessage.collectAsState()
+    val showSyncChoiceDialog by viewModel.showSyncChoiceDialog.collectAsState()
+    val showTrashCloudConfirmDialog by viewModel.showTrashCloudConfirmDialog.collectAsState()
 
     var cityMenuExpanded by remember { mutableStateOf(false) }
     var methodMenuExpanded by remember { mutableStateOf(false) }
@@ -565,8 +567,9 @@ fun SettingsScreen(
                                 HorizontalDivider(color = SurfaceCardBorder, thickness = 0.5.dp)
 
                                 // Action: Sync Now
+                                // Action 1: Unggah Data HP ke Cloud
                                 Button(
-                                    onClick = { viewModel.performSync() },
+                                    onClick = { viewModel.onSelectSyncLocalToCloud() },
                                     enabled = !isSyncing,
                                     colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary),
                                     shape = RoundedCornerShape(10.dp),
@@ -581,13 +584,27 @@ fun SettingsScreen(
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Text("Sedang Sinkronisasi...", color = Color.White)
                                     } else {
-                                        Icon(Icons.Default.Sync, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                                        Icon(Icons.Default.CloudUpload, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                                         Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Sinkronkan Sekarang", fontWeight = FontWeight.Bold, color = Color.White)
+                                        Text("Unggah Data HP ke Cloud", fontWeight = FontWeight.Bold, color = Color.White)
                                     }
                                 }
 
-                                // Action: Open Google Sheets
+                                // Action 2: Tarik Data dari Cloud ke HP
+                                OutlinedButton(
+                                    onClick = { viewModel.onSelectSyncCloudToLocal() },
+                                    enabled = !isSyncing,
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = EmeraldLight),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, EmeraldLight.copy(alpha = 0.5f))
+                                ) {
+                                    Icon(Icons.Default.CloudDownload, contentDescription = null, tint = EmeraldLight, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Tarik Data dari Cloud (Download ke HP)", fontWeight = FontWeight.SemiBold)
+                                }
+
+                                // Action 3: Buka Google Sheets
                                 settings.spreadsheetUrl?.let { url ->
                                     OutlinedButton(
                                         onClick = {
@@ -605,17 +622,17 @@ fun SettingsScreen(
                                     }
                                 }
 
-                                // Action: Restore from Drive
+                                // Action 4: Pindahkan Cadangan ke Sampah
                                 OutlinedButton(
-                                    onClick = { showRestoreDialog = true },
+                                    onClick = { viewModel.openTrashCloudConfirmDialog() },
                                     shape = RoundedCornerShape(10.dp),
                                     modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = StatusMissed),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, StatusMissed.copy(alpha = 0.4f))
                                 ) {
-                                    Icon(Icons.Default.Download, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(18.dp))
+                                    Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = StatusMissed, modifier = Modifier.size(18.dp))
                                     Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Pulihkan dari Google Drive")
+                                    Text("Pindahkan Cadangan Cloud ke Sampah", fontWeight = FontWeight.SemiBold)
                                 }
                             }
                         }
@@ -1068,6 +1085,158 @@ fun SettingsScreen(
                 },
                 dismissButton = {
                     TextButton(onClick = { showRestoreDialog = false }) {
+                        Text("Batal", color = TextSecondary)
+                    }
+                }
+            )
+        }
+
+        // Dialog Pilihan Sumber Data Saat Pertama Login
+        if (showSyncChoiceDialog) {
+            AlertDialog(
+                onDismissRequest = { viewModel.dismissSyncChoiceDialog() },
+                containerColor = SurfaceDark,
+                shape = RoundedCornerShape(20.dp),
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .background(EmeraldContainer, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.CloudDone, contentDescription = null, tint = EmeraldLight, modifier = Modifier.size(20.dp))
+                        }
+                        Text("Pilih Sumber Data Utama", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    }
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            text = "Akun Google kamu berhasil terhubung! Silakan tentukan data mana yang ingin kamu gunakan:",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+
+                        // Opsi 1: Gunakan Data HP Ini (Upload ke Cloud)
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = SurfaceCard,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, EmeraldLight.copy(alpha = 0.5f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { viewModel.onSelectSyncLocalToCloud() }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier.size(36.dp).background(EmeraldContainer, CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.CloudUpload, contentDescription = null, tint = EmeraldLight, modifier = Modifier.size(20.dp))
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text("Gunakan Data HP Ini", fontWeight = FontWeight.Bold, color = EmeraldLight, style = MaterialTheme.typography.titleSmall)
+                                        Surface(shape = RoundedCornerShape(4.dp), color = EmeraldContainer) {
+                                            Text("Upload", style = MaterialTheme.typography.labelSmall, color = EmeraldLight, modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp))
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("Unggah catatan yang ada di HP ini untuk membuat spreadsheet & cadangan baru di Google Drive kamu.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                }
+                            }
+                        }
+
+                        // Opsi 2: Gunakan Data dari Cloud (Download ke HP)
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = SurfaceCard,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { viewModel.onSelectSyncCloudToLocal() }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier.size(36.dp).background(AmberGold.copy(alpha = 0.15f), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.CloudDownload, contentDescription = null, tint = AmberGold, modifier = Modifier.size(20.dp))
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text("Gunakan Data dari Cloud", fontWeight = FontWeight.Bold, color = TextPrimary, style = MaterialTheme.typography.titleSmall)
+                                        Surface(shape = RoundedCornerShape(4.dp), color = AmberGold.copy(alpha = 0.15f)) {
+                                            Text("Download", style = MaterialTheme.typography.labelSmall, color = AmberGold, modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp))
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("Tarik & pulihkan data salat yang sudah ada di Google Drive / Sheets ke HP ini.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { viewModel.dismissSyncChoiceDialog() }) {
+                        Text("Batal", color = TextSecondary)
+                    }
+                }
+            )
+        }
+
+        // Dialog Konfirmasi Pindah ke Sampah
+        if (showTrashCloudConfirmDialog) {
+            AlertDialog(
+                onDismissRequest = { viewModel.dismissTrashCloudConfirmDialog() },
+                containerColor = SurfaceDark,
+                shape = RoundedCornerShape(20.dp),
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = StatusMissed, modifier = Modifier.size(22.dp))
+                        Text("Pindahkan ke Sampah?", color = TextPrimary, fontWeight = FontWeight.Bold)
+                    }
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Cadangan di Google Drive (prayer_tracker_backup.json) dan Google Spreadsheet akan dipindahkan ke folder Sampah (Trash) di Google Drive kamu.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = TextSecondary
+                        )
+                        Text(
+                            text = "✓ File masih bisa dipulihkan dari Sampah Google Drive jika kamu berubah pikiran.\n✓ Jika kamu menyinkronkan lagi nanti, aplikasi akan otomatis membuat cadangan baru yang segar.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = AmberGold
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { viewModel.confirmTrashCloudData() },
+                        colors = ButtonDefaults.buttonColors(containerColor = StatusMissed),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text("Pindahkan ke Sampah", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.dismissTrashCloudConfirmDialog() }) {
                         Text("Batal", color = TextSecondary)
                     }
                 }

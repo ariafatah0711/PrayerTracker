@@ -236,4 +236,28 @@ class GoogleDriveBackupManager(
         }
         return null
     }
+
+    suspend fun trashCloudBackup(): Result<Unit> = withContext(Dispatchers.IO) {
+        val token = authManager.getAccessToken()
+            ?: return@withContext Result.failure(IllegalStateException("Belum login akun Google"))
+        try {
+            val fileId = findExistingBackupFileId(token)
+            if (fileId != null) {
+                val patchBody = JSONObject().put("trashed", true).toString().toRequestBody(jsonMediaType)
+                val request = Request.Builder()
+                    .url("$DRIVE_FILES_URL/$fileId")
+                    .addHeader("Authorization", "Bearer $token")
+                    .patch(patchBody)
+                    .build()
+                httpClient.newCall(request).execute().use { res ->
+                    if (!res.isSuccessful) {
+                        return@withContext Result.failure(Exception("Gagal memindahkan backup Drive ke sampah: HTTP ${res.code}"))
+                    }
+                }
+            }
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 }

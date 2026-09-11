@@ -25,6 +25,36 @@ class LocalBackupManager(private val database: AppDatabase) {
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
         .withZone(ZoneId.systemDefault())
 
+    companion object {
+        private const val EARLY_WINDOW_MS = 30 * 60 * 1000L  // 30 menit
+        private const val LATE_WINDOW_MS  = 15 * 60 * 1000L  // 15 menit
+    }
+
+    /**
+     * Menentukan keterangan berdasarkan jam selesai relatif terhadap jadwal masuk dan batas akhir.
+     */
+    private fun resolveKeterangan(
+        status: PrayerStatus,
+        completedAtEpoch: Long?,
+        scheduledTimeEpoch: Long,
+        endTimeEpoch: Long
+    ): String {
+        return when (status) {
+            PrayerStatus.COMPLETED -> {
+                val doneAt = completedAtEpoch ?: scheduledTimeEpoch
+                when {
+                    doneAt <= scheduledTimeEpoch + EARLY_WINDOW_MS -> "Tepat Waktu (Awal Waktu)"
+                    doneAt <= endTimeEpoch - LATE_WINDOW_MS -> "Tepat Waktu"
+                    doneAt <= endTimeEpoch -> "Tepat Waktu (Akhir Waktu)"
+                    else -> "Qadha Selesai"
+                }
+            }
+            PrayerStatus.QADHA_COMPLETED -> "Qadha Selesai"
+            PrayerStatus.MISSED -> "Terlewat (Belum Qadha)"
+            else -> "Belum Salat"
+        }
+    }
+
     private fun formatEpoch(epoch: Long?): String {
         if (epoch == null || epoch <= 0) return "-"
         return try {
@@ -108,12 +138,12 @@ class LocalBackupManager(private val database: AppDatabase) {
                     val isDone = p.status == PrayerStatus.COMPLETED || p.status == PrayerStatus.QADHA_COMPLETED
                     val statusIbadah = if (isDone) "Sudah" else "Belum"
                     val jamSelesai = if (isDone) formatEpoch(p.completedAtEpoch ?: p.scheduledTimeEpoch) else "-"
-                    val keterangan = when (p.status) {
-                        PrayerStatus.COMPLETED -> "Tepat Waktu"
-                        PrayerStatus.QADHA_COMPLETED -> "Qadha Selesai"
-                        PrayerStatus.MISSED -> "Terlewat (Belum Qadha)"
-                        else -> "Belum Salat"
-                    }
+                    val keterangan = resolveKeterangan(
+                        status = p.status,
+                        completedAtEpoch = p.completedAtEpoch,
+                        scheduledTimeEpoch = p.scheduledTimeEpoch,
+                        endTimeEpoch = p.endTimeEpoch
+                    )
 
                     val line = listOf(
                         "${idx + 1}",

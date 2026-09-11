@@ -70,7 +70,7 @@ class PrayerTrackerApp : Application() {
 
         googleAuthManager = com.prayertracker.app.core.sync.GoogleAuthManager(this)
         val driveBackupManager = com.prayertracker.app.core.sync.GoogleDriveBackupManager(database, googleAuthManager)
-        val sheetsSyncManager = com.prayertracker.app.core.sync.GoogleSheetsSyncManager(database, googleAuthManager)
+        val sheetsSyncManager = com.prayertracker.app.core.sync.GoogleSheetsSyncManager(database, googleAuthManager, settingsRepository)
         syncCoordinator = com.prayertracker.app.core.sync.SyncCoordinator(database, driveBackupManager, sheetsSyncManager, settingsRepository)
         localBackupManager = com.prayertracker.app.core.sync.LocalBackupManager(database)
 

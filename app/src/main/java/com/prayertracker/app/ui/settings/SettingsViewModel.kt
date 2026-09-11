@@ -85,6 +85,12 @@ class SettingsViewModel(
     private val _syncMessage = MutableStateFlow<String?>(null)
     val syncMessage: StateFlow<String?> = _syncMessage.asStateFlow()
 
+    private val _showSyncChoiceDialog = MutableStateFlow(false)
+    val showSyncChoiceDialog: StateFlow<Boolean> = _showSyncChoiceDialog.asStateFlow()
+
+    private val _showTrashCloudConfirmDialog = MutableStateFlow(false)
+    val showTrashCloudConfirmDialog: StateFlow<Boolean> = _showTrashCloudConfirmDialog.asStateFlow()
+
     fun triggerTestNotification() {
         notificationHelper.triggerTestNotification()
         _syncMessage.value = "Notifikasi Heads-Up banner berhasil dikirim!"
@@ -113,8 +119,8 @@ class SettingsViewModel(
             if (account != null && account.email != null) {
                 viewModelScope.launch {
                     settingsRepository.updateGoogleAccount(account.email)
-                    _syncMessage.value = "Berhasil terhubung ke ${account.email}"
-                    performSync()
+                    _showSyncChoiceDialog.value = true
+                    _syncMessage.value = "Berhasil terhubung ke ${account.email}. Silakan pilih arah sinkronisasi."
                 }
             } else {
                 _syncMessage.value = "Login dibatalkan atau akun tidak ditemukan"
@@ -203,6 +209,64 @@ class SettingsViewModel(
                 _syncMessage.value = "Berhasil memulihkan ${result.getOrNull()} catatan salat!"
             } else {
                 _syncMessage.value = "Gagal memulihkan data: ${result.exceptionOrNull()?.localizedMessage}"
+            }
+        }
+    }
+
+    fun onSelectSyncCloudToLocal() {
+        _showSyncChoiceDialog.value = false
+        viewModelScope.launch {
+            _isSyncing.value = true
+            _syncMessage.value = "Sedang menarik data dari Cloud ke HP..."
+            val res = syncCoordinator.syncCloudToLocal()
+            _isSyncing.value = false
+            _syncMessage.value = if (res.isSuccess) res.getOrNull() else "Gagal: ${res.exceptionOrNull()?.localizedMessage}"
+        }
+    }
+
+    fun onSelectSyncLocalToCloud() {
+        _showSyncChoiceDialog.value = false
+        viewModelScope.launch {
+            _isSyncing.value = true
+            _syncMessage.value = "Sedang mengunggah data HP ke Cloud..."
+            val res = syncCoordinator.syncLocalToCloud()
+            _isSyncing.value = false
+            _syncMessage.value = if (res.isSuccess) "Data HP berhasil diunggah ke Google Drive & Spreadsheet!" else "Gagal: ${res.exceptionOrNull()?.localizedMessage}"
+        }
+    }
+
+    fun onSelectSyncSmartMerge() {
+        _showSyncChoiceDialog.value = false
+        performSync()
+    }
+
+    fun openSyncChoiceDialog() {
+        _showSyncChoiceDialog.value = true
+    }
+
+    fun dismissSyncChoiceDialog() {
+        _showSyncChoiceDialog.value = false
+    }
+
+    fun openTrashCloudConfirmDialog() {
+        _showTrashCloudConfirmDialog.value = true
+    }
+
+    fun dismissTrashCloudConfirmDialog() {
+        _showTrashCloudConfirmDialog.value = false
+    }
+
+    fun confirmTrashCloudData() {
+        _showTrashCloudConfirmDialog.value = false
+        viewModelScope.launch {
+            _isSyncing.value = true
+            _syncMessage.value = "Sedang memindahkan cadangan Cloud ke Sampah..."
+            val res = syncCoordinator.trashCloudData()
+            _isSyncing.value = false
+            if (res.isSuccess) {
+                _syncMessage.value = "Cadangan Google Drive & Spreadsheet berhasil dipindahkan ke Sampah Google Drive!"
+            } else {
+                _syncMessage.value = "Gagal memindahkan ke sampah: ${res.exceptionOrNull()?.localizedMessage}"
             }
         }
     }

@@ -112,11 +112,19 @@ class AppSettingsRepository(private val context: Context) {
         }
     }
 
-    suspend fun updateSyncInfo(epoch: Long, spreadsheetUrl: String?) {
+    suspend fun updateSyncInfo(epoch: Long?, spreadsheetUrl: String?) {
         context.dataStore.edit { prefs ->
-            prefs[Keys.LAST_SYNC_EPOCH] = epoch
+            if (epoch != null) {
+                prefs[Keys.LAST_SYNC_EPOCH] = epoch
+            } else {
+                prefs.remove(Keys.LAST_SYNC_EPOCH)
+            }
+
+            // Only update URL if provided, OR clear if epoch is also null (full reset)
             if (spreadsheetUrl != null) {
                 prefs[Keys.SPREADSHEET_URL] = spreadsheetUrl
+            } else if (epoch == null) {
+                prefs.remove(Keys.SPREADSHEET_URL)
             }
         }
     }
