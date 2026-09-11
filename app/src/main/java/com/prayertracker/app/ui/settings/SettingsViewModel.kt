@@ -67,7 +67,7 @@ class SettingsViewModel(
 
     val settings: StateFlow<AppSettings> = settingsRepository.settingsFlow.stateIn(
         scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
+        started = SharingStarted.Eagerly,
         initialValue = AppSettings()
     )
 
@@ -163,6 +163,7 @@ class SettingsViewModel(
             val result = localBackupManager.restoreFromJsonUri(context, uri)
             _isSyncing.value = false
             if (result.isSuccess) {
+                syncCoordinator.notifyDataRefreshed()
                 _syncMessage.value = "Berhasil memulihkan ${result.getOrThrow()} data salat!"
             } else {
                 _syncMessage.value = "Gagal memulihkan cadangan: ${result.exceptionOrNull()?.localizedMessage}"

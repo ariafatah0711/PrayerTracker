@@ -38,10 +38,10 @@ interface PrayerRecordDao {
     @Query("SELECT * FROM prayer_records ORDER BY scheduled_time_epoch DESC")
     suspend fun getAllPrayers(): List<PrayerRecordEntity>
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(prayers: List<PrayerRecordEntity>)
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(prayer: PrayerRecordEntity)
 
     @Update

@@ -68,68 +68,115 @@ class GoogleSheetsSyncManager(
                     val remoteValues = resJson.optJSONArray("values")
                     if (remoteValues != null && remoteValues.length() > 0) {
                         val remoteIds = mutableSetOf<String>()
+                        val remoteNamesAndDates = mutableSetOf<String>()
                         val datesInSheet = mutableSetOf<String>()
 
                         for (i in 0 until remoteValues.length()) {
                             val rRow = remoteValues.getJSONArray(i)
                             val rowId = rRow.optString(0, "").trim()
                             val rDate = rRow.optString(1, "").trim()
+                            val rSalatStr = rRow.optString(2, "").trim()
+                            val pName = PrayerName.fromString(rSalatStr) ?: PrayerName.FAJR
+
                             if (rowId.isNotBlank()) remoteIds.add(rowId)
-                            if (rDate.isNotBlank()) datesInSheet.add(rDate)
+                            if (rDate.isNotBlank()) {
+                                datesInSheet.add(rDate)
+                                remoteNamesAndDates.add("${pName.name}_$rDate")
+                            }
 
-                            if (rowId.isNotBlank()) {
+                            if (rowId.isNotBlank() && rDate.isNotBlank()) {
+                                val rJadwal = rRow.optString(3, "").trim()
+                                val rBatas = rRow.optString(4, "").trim()
+                                val rJamSelesai = rRow.optString(5, "").trim()
+                                val rStatusIbadah = rRow.optString(6, "").trim()
+                                val rKeterangan = rRow.optString(7, "").trim()
+
+                                val isRemoteDone = rStatusIbadah.equals("Sudah", ignoreCase = true)
+                                val isRemoteQadha = rKeterangan.contains("Qadha", ignoreCase = true) || rJamSelesai.contains("Qadha", ignoreCase = true)
+                                val nowEpoch = System.currentTimeMillis()
+
+                                // Cari entitas lokal baik dengan ID maupun pasangan (Nama Salat + Tanggal)
                                 val localPrayer = database.prayerRecordDao().getPrayerById(rowId)
+                                    ?: database.prayerRecordDao().getPrayerByNameAndDate(pName, rDate)
+
+                                val targetId = localPrayer?.id ?: rowId
+
+                                val parsedSched = parseTimeToEpoch(rDate, rJadwal)
+                                val parsedEnd = parseTimeToEpoch(rDate, rBatas)
+                                val schedEpoch = if (parsedSched > 0) parsedSched else (localPrayer?.scheduledTimeEpoch ?: nowEpoch)
+                                val endEpoch = if (parsedEnd > 0) parsedEnd else (localPrayer?.endTimeEpoch ?: (schedEpoch + 3600000))
+
+                                val targetStatus = if (isRemoteDone) {
+                                    if (isRemoteQadha) PrayerStatus.QADHA_COMPLETED else PrayerStatus.COMPLETED
+                                } else {
+                                    if (nowEpoch > endEpoch) PrayerStatus.MISSED else (localPrayer?.status ?: PrayerStatus.PENDING)
+                                }
+
+                                var targetCompletedAt: Long? = null
+                                if (isRemoteDone) {
+                                    val parsedDone = parseTimeToEpoch(rDate, rJamSelesai)
+                                    targetCompletedAt = if (parsedDone > 0) parsedDone else (localPrayer?.completedAtEpoch ?: schedEpoch)
+                                }
+
                                 if (localPrayer != null) {
-                                    val rStatusIbadah = rRow.optString(6, "")
-                                    val rJamSelesai = rRow.optString(5, "")
-                                    val rKeterangan = rRow.optString(7, "")
-
-                                    val isRemoteDone = rStatusIbadah.equals("Sudah", ignoreCase = true)
-                                    val isRemoteQadha = rKeterangan.contains("Qadha", ignoreCase = true)
-                                    val targetStatus = if (isRemoteDone) {
-                                        if (isRemoteQadha) PrayerStatus.QADHA_COMPLETED else PrayerStatus.COMPLETED
-                                    } else {
-                                        if (localPrayer.status == PrayerStatus.COMPLETED || localPrayer.status == PrayerStatus.QADHA_COMPLETED) {
-                                            PrayerStatus.MISSED
-                                        } else {
-                                            localPrayer.status
-                                        }
-                                    }
-
-                                    var targetCompletedAt = localPrayer.completedAtEpoch
-                                    if (isRemoteDone && rJamSelesai.isNotBlank() && rJamSelesai != "-") {
-                                        try {
-                                            val cleanTime = rJamSelesai.replace("(Qadha)", "").trim()
-                                            val parts = cleanTime.split(":")
-                                            if (parts.size == 2) {
-                                                val h = parts[0].toInt()
-                                                val m = parts[1].toInt()
-                                                val pDate = java.time.LocalDate.parse(localPrayer.prayerDate)
-                                                targetCompletedAt = pDate.atTime(h, m).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
-                                            }
-                                        } catch (_: Exception) {}
-                                    } else if (!isRemoteDone) {
-                                        targetCompletedAt = null
-                                    }
-
                                     if (localPrayer.status != targetStatus || localPrayer.completedAtEpoch != targetCompletedAt) {
                                         database.prayerRecordDao().updateStatus(
-                                            id = rowId,
+                                            id = targetId,
                                             status = targetStatus,
-                                            completedAt = targetCompletedAt ?: localPrayer.scheduledTimeEpoch,
+                                            completedAt = targetCompletedAt,
                                             syncStatus = SyncStatus.SYNCED
                                         )
                                     }
+                                } else {
+                                    // PENTING: Pulihkan baris dari cloud ini ke database lokal!
+                                    // Mencegah data cloud terhapus saat user login ulang atau sehabis reset lokal
+                                    val newPrayer = PrayerRecordEntity(
+                                        id = targetId,
+                                        userId = "local_user",
+                                        prayerName = pName,
+                                        prayerDate = rDate,
+                                        scheduledTimeEpoch = schedEpoch,
+                                        endTimeEpoch = endEpoch,
+                                        status = targetStatus,
+                                        completedAtEpoch = targetCompletedAt,
+                                        syncStatus = SyncStatus.SYNCED
+                                    )
+                                    database.prayerRecordDao().insert(newPrayer)
+                                }
+
+                                // Sinkronkan tabel qadha_records
+                                if (targetStatus == PrayerStatus.QADHA_COMPLETED) {
+                                    val existingQ = database.qadhaRecordDao().getByPrayerRecordId(targetId)
+                                    if (existingQ == null) {
+                                        database.qadhaRecordDao().insert(
+                                            com.prayertracker.app.core.database.entity.QadhaRecordEntity(
+                                                id = java.util.UUID.randomUUID().toString(),
+                                                prayerRecordId = targetId,
+                                                qadhaStatus = PrayerStatus.QADHA_COMPLETED,
+                                                qadhaAtEpoch = targetCompletedAt ?: nowEpoch,
+                                                notes = "Sinkron Google Sheets",
+                                                syncStatus = SyncStatus.SYNCED
+                                            )
+                                        )
+                                    }
+                                } else {
+                                    database.qadhaRecordDao().deleteByPrayerRecordId(targetId)
                                 }
                             }
                         }
 
-                        // Jika pengguna menghapus baris di Google Sheets, hapus juga dari database lokal
+                        // Hanya hapus jika pengguna secara eksplisit menghapus baris di Google Sheets
                         if (remoteIds.isNotEmpty() && datesInSheet.isNotEmpty()) {
                             val localPrayers = database.prayerRecordDao().getAllPrayers()
-                            val toDelete = localPrayers.filter { it.prayerDate in datesInSheet && it.id !in remoteIds }
+                            val toDelete = localPrayers.filter {
+                                it.prayerDate in datesInSheet &&
+                                it.id !in remoteIds &&
+                                "${it.prayerName.name}_${it.prayerDate}" !in remoteNamesAndDates
+                            }
                             if (toDelete.isNotEmpty()) {
-                                database.prayerRecordDao().deleteByIds(toDelete.map { it.id })
+                                val deleteIds = toDelete.map { it.id }
+                                database.qadhaRecordDao().deleteByPrayerRecordIds(deleteIds)
+                                database.prayerRecordDao().deleteByIds(deleteIds)
                             }
                         }
                     }
@@ -737,6 +784,24 @@ class GoogleSheetsSyncManager(
                 })
                 put("fields", "pixelSize")
             })
+        }
+    }
+
+    private fun parseTimeToEpoch(dateStr: String, timeStr: String): Long {
+        return try {
+            val clean = timeStr.replace("WIB", "").replace("WITA", "").replace("WIT", "")
+                .replace("(Qadha)", "").trim()
+            val parts = clean.split(":")
+            if (parts.size >= 2) {
+                val h = parts[0].trim().toInt()
+                val m = parts[1].trim().toInt()
+                val pDate = java.time.LocalDate.parse(dateStr.trim())
+                pDate.atTime(h, m).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+            } else {
+                0L
+            }
+        } catch (_: Exception) {
+            0L
         }
     }
 }

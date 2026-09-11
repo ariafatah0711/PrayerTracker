@@ -10,7 +10,7 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface QadhaRecordDao {
 
-    @Insert(onConflict = OnConflictStrategy.ABORT)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(qadhaRecord: QadhaRecordEntity): Long
 
     @Query("SELECT * FROM qadha_records WHERE prayer_record_id = :prayerRecordId LIMIT 1")
@@ -21,6 +21,12 @@ interface QadhaRecordDao {
 
     @Query("SELECT * FROM qadha_records WHERE sync_status = 'PENDING_SYNC'")
     suspend fun getPendingSyncQadha(): List<QadhaRecordEntity>
+
+    @Query("DELETE FROM qadha_records WHERE prayer_record_id = :prayerRecordId")
+    suspend fun deleteByPrayerRecordId(prayerRecordId: String): Int
+
+    @Query("DELETE FROM qadha_records WHERE prayer_record_id IN (:prayerRecordIds)")
+    suspend fun deleteByPrayerRecordIds(prayerRecordIds: List<String>): Int
 
     @Query("DELETE FROM qadha_records")
     suspend fun clearAll()

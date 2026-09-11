@@ -116,18 +116,14 @@ class GoogleDriveBackupManager(
     }
 
     private suspend fun createBackupJson(): JSONObject {
-        val prayers = database.prayerRecordDao().getPrayersForDate("9999-12-31") // dummy or get all
-        // Let's get all prayers directly from DAO or query
-        val allPrayers = database.prayerRecordDao().getPendingSyncPrayers()
-        val missed = database.prayerRecordDao().getMissedPrayers()
+        val allPrayers = database.prayerRecordDao().getAllPrayers()
 
         val root = JSONObject()
         root.put("version", 1)
         root.put("timestamp", System.currentTimeMillis())
 
         val prayerArray = JSONArray()
-        // Collect prayer records
-        missed.forEach { p ->
+        allPrayers.forEach { p ->
             val obj = JSONObject().apply {
                 put("id", p.id)
                 put("user_id", p.userId)
@@ -151,21 +147,71 @@ class GoogleDriveBackupManager(
 
         for (i in 0 until prayersArray.length()) {
             val obj = prayersArray.getJSONObject(i)
+            val pName = PrayerName.valueOf(obj.getString("prayer_name"))
+            val pDate = obj.getString("prayer_date")
             val prayer = PrayerRecordEntity(
                 id = obj.getString("id"),
                 userId = obj.optString("user_id", "local_user"),
-                prayerName = PrayerName.valueOf(obj.getString("prayer_name")),
-                prayerDate = obj.getString("prayer_date"),
+                prayerName = pName,
+                prayerDate = pDate,
                 scheduledTimeEpoch = obj.getLong("scheduled_time_epoch"),
                 endTimeEpoch = obj.getLong("end_time_epoch"),
                 status = PrayerStatus.valueOf(obj.getString("status")),
                 completedAtEpoch = if (obj.isNull("completed_at_epoch")) null else obj.getLong("completed_at_epoch"),
                 syncStatus = SyncStatus.SYNCED
             )
-            entities.add(prayer)
+
+            // Cek apakah di lokal sudah ada salat dengan nama & tanggal yang sama
+            val existing = database.prayerRecordDao().getPrayerById(prayer.id)
+                ?: database.prayerRecordDao().getPrayerByNameAndDate(pName, pDate)
+
+            if (existing != null && existing.id != prayer.id) {
+                val mergedStatus = if (existing.status == PrayerStatus.COMPLETED || existing.status == PrayerStatus.QADHA_COMPLETED) {
+                    existing.status
+                } else {
+                    prayer.status
+                }
+                val mergedCompletedAt = existing.completedAtEpoch ?: prayer.completedAtEpoch
+                database.qadhaRecordDao().deleteByPrayerRecordId(existing.id)
+                database.prayerRecordDao().deleteById(existing.id)
+                entities.add(prayer.copy(status = mergedStatus, completedAtEpoch = mergedCompletedAt))
+            } else if (existing != null) {
+                val mergedStatus = if (existing.status == PrayerStatus.COMPLETED || existing.status == PrayerStatus.QADHA_COMPLETED) {
+                    existing.status
+                } else {
+                    prayer.status
+                }
+                val mergedCompletedAt = existing.completedAtEpoch ?: prayer.completedAtEpoch
+                entities.add(prayer.copy(status = mergedStatus, completedAtEpoch = mergedCompletedAt))
+            } else {
+                entities.add(prayer)
+            }
         }
 
+        // Hapus child record qadha terlebih dahulu agar tidak bentrok foreign key
+        val ids = entities.map { it.id }
+        database.qadhaRecordDao().deleteByPrayerRecordIds(ids)
         database.prayerRecordDao().insertAll(entities)
+
+        // Pulihkan juga record qadha untuk salat yang statusnya QADHA_COMPLETED
+        entities.forEach { p ->
+            if (p.status == PrayerStatus.QADHA_COMPLETED) {
+                val existingQ = database.qadhaRecordDao().getByPrayerRecordId(p.id)
+                if (existingQ == null) {
+                    database.qadhaRecordDao().insert(
+                        com.prayertracker.app.core.database.entity.QadhaRecordEntity(
+                            id = java.util.UUID.randomUUID().toString(),
+                            prayerRecordId = p.id,
+                            qadhaStatus = PrayerStatus.QADHA_COMPLETED,
+                            qadhaAtEpoch = p.completedAtEpoch ?: p.scheduledTimeEpoch,
+                            notes = "Dipulihkan dari Google Drive",
+                            syncStatus = SyncStatus.SYNCED
+                        )
+                    )
+                }
+            }
+        }
+
         return entities.size
     }
 

@@ -235,40 +235,40 @@ class PrayerRepositoryImpl(
     }
 
     override suspend fun performQadha(prayerRecordId: String, notes: String?): Result<Unit> {
-        val prayer = prayerDao.getPrayerById(prayerRecordId)
-            ?: return Result.failure(IllegalArgumentException("Prayer not found"))
+        return try {
+            val prayer = prayerDao.getPrayerById(prayerRecordId)
+                ?: return Result.failure(IllegalArgumentException("Data salat tidak ditemukan (ID: $prayerRecordId)"))
 
-        if (prayer.status != PrayerStatus.MISSED) {
-            return Result.failure(IllegalStateException("Only MISSED prayers can be qadha'd. Current status: ${prayer.status}"))
-        }
+            val now = System.currentTimeMillis()
 
-        val existingQadha = qadhaDao.getByPrayerRecordId(prayerRecordId)
-        if (existingQadha != null) {
-            return Result.failure(IllegalStateException("This missed prayer has already been qadha'd"))
-        }
+            // Hapus rekaman qadha lama jika ada agar tidak bentrok foreign key / unique index
+            qadhaDao.deleteByPrayerRecordId(prayerRecordId)
 
-        val now = System.currentTimeMillis()
-
-        // Insert separate audit record for Qadha
-        qadhaDao.insert(
-            QadhaRecordEntity(
-                id = UUID.randomUUID().toString(),
-                prayerRecordId = prayerRecordId,
-                qadhaStatus = PrayerStatus.QADHA_COMPLETED,
-                qadhaAtEpoch = now,
-                notes = notes
+            // Simpan audit record qadha baru
+            qadhaDao.insert(
+                QadhaRecordEntity(
+                    id = UUID.randomUUID().toString(),
+                    prayerRecordId = prayerRecordId,
+                    qadhaStatus = PrayerStatus.QADHA_COMPLETED,
+                    qadhaAtEpoch = now,
+                    notes = notes,
+                    syncStatus = SyncStatus.PENDING_SYNC
+                )
             )
-        )
 
-        // Update original prayer record status to QADHA_COMPLETED (preserving original missed scheduled times)
-        prayerDao.updateStatus(
-            id = prayerRecordId,
-            status = PrayerStatus.QADHA_COMPLETED,
-            completedAt = now,
-            updatedAt = now
-        )
+            // Update status salat menjadi QADHA_COMPLETED
+            prayerDao.updateStatus(
+                id = prayerRecordId,
+                status = PrayerStatus.QADHA_COMPLETED,
+                completedAt = now,
+                updatedAt = now,
+                syncStatus = SyncStatus.PENDING_SYNC
+            )
 
-        return Result.success(Unit)
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
     }
 
     override fun getPendingQadhaFlow(): Flow<List<QadhaItem>> {

@@ -24,12 +24,15 @@ class StatisticsViewModel(
     private val _uiState = MutableStateFlow(StatisticsUiState())
     val uiState: StateFlow<StatisticsUiState> = _uiState.asStateFlow()
 
+    private var statsJob: kotlinx.coroutines.Job? = null
+
     init {
         loadStatistics()
     }
 
-    private fun loadStatistics() {
-        viewModelScope.launch {
+    fun loadStatistics() {
+        statsJob?.cancel()
+        statsJob = viewModelScope.launch {
             getStatisticsUseCase().collectLatest { data ->
                 _uiState.update { it.copy(stats = data, isLoading = false) }
             }

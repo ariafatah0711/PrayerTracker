@@ -46,12 +46,15 @@ class HistoryViewModel(
     private val _uiState = MutableStateFlow(HistoryUiState())
     val uiState: StateFlow<HistoryUiState> = _uiState.asStateFlow()
 
+    private var historyJob: kotlinx.coroutines.Job? = null
+
     init {
         loadHistory()
     }
 
-    private fun loadHistory() {
-        viewModelScope.launch {
+    fun loadHistory() {
+        historyJob?.cancel()
+        historyJob = viewModelScope.launch {
             getHistoryUseCase().collectLatest { list ->
                 _uiState.update { current ->
                     val result = applyFilterAndPagination(

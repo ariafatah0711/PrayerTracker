@@ -78,7 +78,9 @@ class MainActivity : ComponentActivity() {
                 val qadhaViewModel: QadhaViewModel = viewModel(
                     factory = QadhaViewModel.Factory(
                         app.getQadhaListUseCase,
-                        app.performQadhaUseCase
+                        app.performQadhaUseCase,
+                        app.reconcileMissedPrayersUseCase,
+                        app.syncCoordinator
                     )
                 )
 
@@ -101,13 +103,37 @@ class MainActivity : ComponentActivity() {
                     )
                 )
 
+                // Otomatis segarkan data di seluruh layar saat sync / restore / pull selesai
+                LaunchedEffect(Unit) {
+                    app.syncCoordinator.dataRefreshEvent.collect {
+                        dashboardViewModel.loadData()
+                        qadhaViewModel.loadData()
+                        historyViewModel.loadHistory()
+                        statisticsViewModel.loadStatistics()
+                    }
+                }
+
+                // Otomatis segarkan data saat berpindah tab
+                LaunchedEffect(currentRoute) {
+                    when (currentRoute) {
+                        Screen.Dashboard.route -> dashboardViewModel.loadData()
+                        Screen.Qadha.route -> qadhaViewModel.loadData()
+                        Screen.History.route -> historyViewModel.loadHistory()
+                        Screen.Statistics.route -> statisticsViewModel.loadStatistics()
+                    }
+                }
+
                 val isSettingsLoaded by settingsViewModel.isLoaded.collectAsState()
                 val settings by settingsViewModel.settings.collectAsState()
+
+                // Tunggu sampai settings benar-benar terpopulasi dari DataStore
+                val isReallyReady = isSettingsLoaded
+
                 val unpaidQadhaCount by remember(qadhaViewModel) {
                     qadhaViewModel.uiState.map { state: QadhaUiState -> state.missedPrayers.size }
                 }.collectAsState(initial = 0)
 
-                if (!isSettingsLoaded) {
+                if (!isReallyReady) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -136,17 +162,19 @@ class MainActivity : ComponentActivity() {
                     Scaffold(
                         containerColor = com.prayertracker.app.ui.theme.BackgroundDark,
                         bottomBar = {
+                            val bottomRoute = navController.currentBackStackEntryAsState().value?.destination?.route
                             NavigationBar(
                                 containerColor = com.prayertracker.app.ui.theme.SurfaceDark,
                                 contentColor = com.prayertracker.app.ui.theme.TextPrimary
                             ) {
-                                Screen.items.forEach { screen ->
-                                    val isSelected = currentRoute == screen.route
+                                Screen.items.filterNotNull().forEach { screen ->
+                                    val route = screen.route
+                                    val isSelected = bottomRoute == route
                                     NavigationBarItem(
                                         selected = isSelected,
                                         onClick = {
-                                            if (currentRoute != screen.route) {
-                                                navController.navigate(screen.route) {
+                                            if (bottomRoute != route) {
+                                                navController.navigate(route) {
                                                     popUpTo(navController.graph.findStartDestination().id) {
                                                         saveState = true
                                                     }

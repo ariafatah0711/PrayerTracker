@@ -31,9 +31,18 @@ fun QadhaScreen(
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.uiState.collectAsState()
+    val snackbarHostState = androidx.compose.runtime.remember { SnackbarHostState() }
+
+    androidx.compose.runtime.LaunchedEffect(state.userMessage) {
+        state.userMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearUserMessage()
+        }
+    }
 
     Scaffold(
         containerColor = BackgroundDark,
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         modifier = modifier
     ) { paddingValues ->
         if (state.isLoading) {
@@ -188,7 +197,7 @@ fun QadhaScreen(
                             style = MaterialTheme.typography.bodyMedium,
                             color = TextSecondary
                         )
-                        Divider(color = SurfaceCardBorder, modifier = Modifier.padding(vertical = 4.dp))
+                        HorizontalDivider(color = SurfaceCardBorder, modifier = Modifier.padding(vertical = 4.dp))
                         Text(
                             text = "Apakah kamu sudah melaksanakan qadha salat ini?",
                             style = MaterialTheme.typography.bodyLarge,

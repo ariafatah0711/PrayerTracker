@@ -232,7 +232,29 @@ class LocalBackupManager(private val database: AppDatabase) {
                 entities.add(prayer)
             }
 
+            val ids = entities.map { it.id }
+            database.qadhaRecordDao().deleteByPrayerRecordIds(ids)
             database.prayerRecordDao().insertAll(entities)
+
+            // Pulihkan juga record qadha untuk salat yang statusnya QADHA_COMPLETED
+            entities.forEach { p ->
+                if (p.status == PrayerStatus.QADHA_COMPLETED) {
+                    val existingQ = database.qadhaRecordDao().getByPrayerRecordId(p.id)
+                    if (existingQ == null) {
+                        database.qadhaRecordDao().insert(
+                            com.prayertracker.app.core.database.entity.QadhaRecordEntity(
+                                id = java.util.UUID.randomUUID().toString(),
+                                prayerRecordId = p.id,
+                                qadhaStatus = PrayerStatus.QADHA_COMPLETED,
+                                qadhaAtEpoch = p.completedAtEpoch ?: p.scheduledTimeEpoch,
+                                notes = "Dipulihkan dari File Cadangan",
+                                syncStatus = SyncStatus.SYNCED
+                            )
+                        )
+                    }
+                }
+            }
+
             Result.success(entities.size)
         } catch (e: Exception) {
             Result.failure(e)
