@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.6"
+        android:scaleY="0.6"
+        android:translateX="21.6"
+        android:translateY="21.6">
+        <!-- Dome base and arch -->
+        <path
+            android:fillColor="#F59E0B"
+            android:pathData="M54,20 C42,20 32,32 32,48 L76,48 C76,32 66,20 54,20 Z" />
+        <!-- Lower pillars -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M30,52 L78,52 L78,80 L30,80 Z" />
+        <!-- Door arch -->
+        <path
+            android:fillColor="#0B1320"
+            android:pathData="M46,80 L46,64 C46,59 62,59 62,64 L62,80 Z" />
+        <!-- Crescent finial -->
+        <path
+            android:fillColor="#F59E0B"
+            android:pathData="M54,12 C52,12 50,14 50,16 C50,18 52,20 54,20 C56,20 58,18 58,16 C58,14 56,12 54,12 Z" />
+    </group>
+</vector>
