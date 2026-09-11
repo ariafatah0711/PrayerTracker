@@ -50,22 +50,22 @@ fun QadhaScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues)
-                    .padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-                contentPadding = PaddingValues(vertical = 16.dp)
+                    .padding(horizontal = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                contentPadding = PaddingValues(vertical = 12.dp)
             ) {
                 // Header
                 item {
-                    Column {
+                    Column(modifier = Modifier.padding(bottom = 2.dp)) {
                         Text(
-                            text = "QADHA",
-                            style = MaterialTheme.typography.headlineMedium,
+                            text = "Qadha Salat",
+                            style = MaterialTheme.typography.titleLarge,
                             color = TextPrimary,
-                            fontWeight = FontWeight.ExtraBold
+                            fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Daftar salat wajib yang terlewat untuk diqadha secara mandiri",
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = "Daftar salat wajib yang terlewat untuk diqadha",
+                            style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )
                     }

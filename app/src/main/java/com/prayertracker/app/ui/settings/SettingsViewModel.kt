@@ -71,6 +71,14 @@ class SettingsViewModel(
         initialValue = AppSettings()
     )
 
+    val isLoaded: StateFlow<Boolean> = settingsRepository.settingsFlow
+        .map { true }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = false
+        )
+
     private val _isSyncing = MutableStateFlow(false)
     val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
 

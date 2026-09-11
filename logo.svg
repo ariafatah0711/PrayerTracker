@@ -1,0 +1,17 @@
+<svg width="512" height="512" viewBox="0 0 108 108" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="108" height="108" fill="#0B1320"/>
+  <rect x="18" y="18" width="72" height="72" fill="#0D9488"/>
+
+  <!-- Foreground (Icon Masjid) -->
+  <g transform="translate(21.6, 21.6) scale(0.6)">
+    <!-- Dome -->
+    <path d="M54,20 C42,20 32,32 32,48 L76,48 C76,32 66,20 54,20 Z" fill="#F59E0B"/>
+    <!-- Pillars -->
+    <path d="M30,52 L78,52 L78,80 L30,80 Z" fill="#FFFFFF"/>
+    <!-- Door -->
+    <path d="M46,80 L46,64 C46,59 62,59 62,64 L62,80 Z" fill="#0B1320"/>
+    <!-- Crescent/Finial -->
+    <circle cx="54" cy="16" r="4" fill="#F59E0B"/>
+  </g>
+</svg>

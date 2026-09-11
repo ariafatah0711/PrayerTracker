@@ -47,16 +47,83 @@ class LocalBackupManager(private val database: AppDatabase) {
             FileOutputStream(csvFile).bufferedWriter().use { writer ->
                 // UTF-8 BOM agar dibuka di Excel Windows langsung rapi tanpa encoding error
                 writer.write("\uFEFF")
-                writer.write("Tanggal,Nama Salat,Jadwal Masuk,Batas Akhir,Status,Waktu Konfirmasi\n")
 
-                prayers.forEach { p ->
+                // BAGIAN 1: REKAP MATRIKS HARIAN (OVERVIEW)
+                writer.write("--- REKAP HARIAN IBADAH SALAT ---\n")
+                writer.write("Tanggal,Subuh,Dzuhur,Ashar,Maghrib,Isya,Total Selesai\n")
+
+                val dates = prayers.map { it.prayerDate }.distinct().sortedDescending()
+                val prayersByDate = prayers.groupBy { it.prayerDate }
+
+                fun formatDateNice(dStr: String): String {
+                    return try {
+                        val parsed = java.time.LocalDate.parse(dStr)
+                        parsed.format(java.time.format.DateTimeFormatter.ofPattern("d MMMM yyyy", java.util.Locale("id", "ID")))
+                    } catch (_: Exception) {
+                        dStr
+                    }
+                }
+
+                fun statusText(p: PrayerRecordEntity?): String {
+                    if (p == null) return "Belum"
+                    val isDone = p.status == PrayerStatus.COMPLETED || p.status == PrayerStatus.QADHA_COMPLETED
+                    if (!isDone) return "Belum"
+                    val time = formatEpoch(p.completedAtEpoch ?: p.scheduledTimeEpoch)
+                    return if (p.status == PrayerStatus.QADHA_COMPLETED) "Sudah ($time Qadha)" else "Sudah ($time)"
+                }
+
+                fun isDone(p: PrayerRecordEntity?): Boolean {
+                    return p?.status == PrayerStatus.COMPLETED || p?.status == PrayerStatus.QADHA_COMPLETED
+                }
+
+                dates.forEach { date ->
+                    val dayPrayers = prayersByDate[date] ?: emptyList()
+                    val fajr = dayPrayers.find { it.prayerName == PrayerName.FAJR }
+                    val dhuhr = dayPrayers.find { it.prayerName == PrayerName.DHUHR }
+                    val asr = dayPrayers.find { it.prayerName == PrayerName.ASR }
+                    val maghrib = dayPrayers.find { it.prayerName == PrayerName.MAGHRIB }
+                    val isha = dayPrayers.find { it.prayerName == PrayerName.ISHA }
+
+                    val doneCount = listOf(fajr, dhuhr, asr, maghrib, isha).count { isDone(it) }
+
+                    val row = listOf(
+                        "\"${formatDateNice(date)}\"",
+                        "\"${statusText(fajr)}\"",
+                        "\"${statusText(dhuhr)}\"",
+                        "\"${statusText(asr)}\"",
+                        "\"${statusText(maghrib)}\"",
+                        "\"${statusText(isha)}\"",
+                        "\"$doneCount / 5\""
+                    ).joinToString(",")
+                    writer.write(row)
+                    writer.newLine()
+                }
+
+                // Baris pemisah
+                writer.newLine()
+                writer.write("--- LOG DETAIL DATA MENTAH PER SALAT ---\n")
+                writer.write("No,Tanggal,Salat,Jadwal Masuk,Batas Akhir,Jam Selesai,Status Ibadah,Keterangan\n")
+
+                prayers.forEachIndexed { idx, p ->
+                    val isDone = p.status == PrayerStatus.COMPLETED || p.status == PrayerStatus.QADHA_COMPLETED
+                    val statusIbadah = if (isDone) "Sudah" else "Belum"
+                    val jamSelesai = if (isDone) formatEpoch(p.completedAtEpoch ?: p.scheduledTimeEpoch) else "-"
+                    val keterangan = when (p.status) {
+                        PrayerStatus.COMPLETED -> "Tepat Waktu"
+                        PrayerStatus.QADHA_COMPLETED -> "Qadha Selesai"
+                        PrayerStatus.MISSED -> "Terlewat (Belum Qadha)"
+                        else -> "Belum Salat"
+                    }
+
                     val line = listOf(
-                        p.prayerDate,
+                        "${idx + 1}",
+                        "\"${formatDateNice(p.prayerDate)}\"",
                         p.prayerName.displayName,
                         formatEpoch(p.scheduledTimeEpoch),
                         formatEpoch(p.endTimeEpoch),
-                        p.status.displayName,
-                        formatEpoch(p.completedAtEpoch)
+                        jamSelesai,
+                        statusIbadah,
+                        "\"$keterangan\""
                     ).joinToString(",")
                     writer.write(line)
                     writer.newLine()

@@ -144,8 +144,8 @@ class PrayerRepositoryImpl(
 
     override suspend fun confirmPrayer(id: String, completedAtEpoch: Long): Result<Unit> {
         val prayer = prayerDao.getPrayerById(id) ?: return Result.failure(IllegalArgumentException("Prayer not found"))
-        if (prayer.status.isTerminal) {
-            // Already completed or qadha completed - idempotent success
+        if (prayer.status.isTerminal && prayer.completedAtEpoch != null) {
+            // Already completed with recorded timestamp - idempotent success
             return Result.success(Unit)
         }
 
@@ -264,7 +264,7 @@ class PrayerRepositoryImpl(
         prayerDao.updateStatus(
             id = prayerRecordId,
             status = PrayerStatus.QADHA_COMPLETED,
-            completedAt = null,
+            completedAt = now,
             updatedAt = now
         )
 

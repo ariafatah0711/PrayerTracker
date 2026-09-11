@@ -35,6 +35,9 @@ interface PrayerRecordDao {
     @Query("SELECT * FROM prayer_records ORDER BY scheduled_time_epoch DESC")
     fun getAllPrayersFlow(): Flow<List<PrayerRecordEntity>>
 
+    @Query("SELECT * FROM prayer_records ORDER BY scheduled_time_epoch DESC")
+    suspend fun getAllPrayers(): List<PrayerRecordEntity>
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertAll(prayers: List<PrayerRecordEntity>)
 
@@ -45,9 +48,9 @@ interface PrayerRecordDao {
     suspend fun update(prayer: PrayerRecordEntity)
 
     @Query("""
-        UPDATE prayer_records 
-        SET status = :status, 
-            completed_at_epoch = :completedAt, 
+        UPDATE prayer_records
+        SET status = :status,
+            completed_at_epoch = :completedAt,
             updated_at_epoch = :updatedAt,
             sync_status = :syncStatus
         WHERE id = :id
@@ -61,11 +64,11 @@ interface PrayerRecordDao {
     ): Int
 
     @Query("""
-        UPDATE prayer_records 
-        SET status = 'MISSED', 
+        UPDATE prayer_records
+        SET status = 'MISSED',
             updated_at_epoch = :updatedAt,
             sync_status = 'PENDING_SYNC'
-        WHERE (status = 'PENDING' OR status = 'OTW') 
+        WHERE (status = 'PENDING' OR status = 'OTW')
           AND end_time_epoch < :currentTimeEpoch
           AND scheduled_time_epoch >= :installedAtEpoch
     """)
@@ -77,6 +80,12 @@ interface PrayerRecordDao {
 
     @Query("DELETE FROM prayer_records")
     suspend fun clearAll()
+
+    @Query("DELETE FROM prayer_records WHERE id = :id")
+    suspend fun deleteById(id: String): Int
+
+    @Query("DELETE FROM prayer_records WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<String>): Int
 
     @Query("SELECT * FROM prayer_records WHERE sync_status = 'PENDING_SYNC'")
     suspend fun getPendingSyncPrayers(): List<PrayerRecordEntity>

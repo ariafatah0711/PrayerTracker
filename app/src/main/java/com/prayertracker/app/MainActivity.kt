@@ -7,10 +7,13 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
@@ -98,22 +101,31 @@ class MainActivity : ComponentActivity() {
                     )
                 )
 
-                val onboardingViewModel: OnboardingViewModel = viewModel(
-                    factory = OnboardingViewModel.Factory(
-                        app.settingsRepository,
-                        app.getTodayPrayersUseCase,
-                        app.confirmPrayerUseCase,
-                        app.markPrayerMissedUseCase,
-                        app.alarmScheduler
-                    )
-                )
-
+                val isSettingsLoaded by settingsViewModel.isLoaded.collectAsState()
                 val settings by settingsViewModel.settings.collectAsState()
                 val unpaidQadhaCount by remember(qadhaViewModel) {
                     qadhaViewModel.uiState.map { state: QadhaUiState -> state.missedPrayers.size }
                 }.collectAsState(initial = 0)
 
-                if (!settings.isOnboardingCompleted) {
+                if (!isSettingsLoaded) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(com.prayertracker.app.ui.theme.BackgroundDark),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = com.prayertracker.app.ui.theme.EmeraldLight)
+                    }
+                } else if (!settings.isOnboardingCompleted) {
+                    val onboardingViewModel: OnboardingViewModel = viewModel(
+                        factory = OnboardingViewModel.Factory(
+                            app.settingsRepository,
+                            app.getTodayPrayersUseCase,
+                            app.confirmPrayerUseCase,
+                            app.markPrayerMissedUseCase,
+                            app.alarmScheduler
+                        )
+                    )
                     OnboardingScreen(
                         viewModel = onboardingViewModel,
                         onFinished = {
