@@ -55,6 +55,8 @@ fun SettingsScreen(
     var madhabMenuExpanded by remember { mutableStateOf(false) }
     var showRestoreDialog by remember { mutableStateOf(false) }
     var showResetDialog by remember { mutableStateOf(false) }
+    var showConfirmUploadToCloudDialog by remember { mutableStateOf(false) }
+    var showConfirmPullFromCloudDialog by remember { mutableStateOf(false) }
     var showSha1Info by remember { mutableStateOf(false) }
     var selectedTab by remember { mutableIntStateOf(0) }
     val tabTitles = listOf("Ibadah", "Cadangan", "Sistem")
@@ -569,7 +571,7 @@ fun SettingsScreen(
                                 // Action: Sync Now
                                 // Action 1: Unggah Data HP ke Cloud
                                 Button(
-                                    onClick = { viewModel.onSelectSyncLocalToCloud() },
+                                    onClick = { showConfirmUploadToCloudDialog = true },
                                     enabled = !isSyncing,
                                     colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary),
                                     shape = RoundedCornerShape(10.dp),
@@ -592,7 +594,7 @@ fun SettingsScreen(
 
                                 // Action 2: Tarik Data dari Cloud ke HP
                                 OutlinedButton(
-                                    onClick = { viewModel.onSelectSyncCloudToLocal() },
+                                    onClick = { showConfirmPullFromCloudDialog = true },
                                     enabled = !isSyncing,
                                     shape = RoundedCornerShape(10.dp),
                                     modifier = Modifier.fillMaxWidth(),
@@ -1237,6 +1239,118 @@ fun SettingsScreen(
                 },
                 dismissButton = {
                     TextButton(onClick = { viewModel.dismissTrashCloudConfirmDialog() }) {
+                        Text("Batal", color = TextSecondary)
+                    }
+                }
+            )
+        }
+
+        // Dialog Konfirmasi Unggah Data HP ke Cloud
+        if (showConfirmUploadToCloudDialog) {
+            AlertDialog(
+                onDismissRequest = { showConfirmUploadToCloudDialog = false },
+                containerColor = SurfaceDark,
+                shape = RoundedCornerShape(20.dp),
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .background(EmeraldContainer, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.CloudUpload, contentDescription = null, tint = EmeraldLight, modifier = Modifier.size(20.dp))
+                        }
+                        Text("Unggah Data ke Cloud?", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    }
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Catatan salat dari HP ini akan diunggah untuk memperbarui Google Drive dan Google Sheets kamu.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = TextSecondary
+                        )
+                        Text(
+                            text = "✓ Data di cloud akan diselaraskan dengan catatan lokal saat ini.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = EmeraldLight
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showConfirmUploadToCloudDialog = false
+                            viewModel.onSelectSyncLocalToCloud()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text("Ya, Unggah Sekarang", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showConfirmUploadToCloudDialog = false }) {
+                        Text("Batal", color = TextSecondary)
+                    }
+                }
+            )
+        }
+
+        // Dialog Konfirmasi Tarik Data dari Cloud ke HP
+        if (showConfirmPullFromCloudDialog) {
+            AlertDialog(
+                onDismissRequest = { showConfirmPullFromCloudDialog = false },
+                containerColor = SurfaceDark,
+                shape = RoundedCornerShape(20.dp),
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .background(AmberGold.copy(alpha = 0.15f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.CloudDownload, contentDescription = null, tint = AmberGold, modifier = Modifier.size(20.dp))
+                        }
+                        Text("Tarik Data dari Cloud?", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    }
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Catatan salat dari Google Drive & Google Sheets kamu akan diunduh dan dipulihkan ke HP ini.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = TextSecondary
+                        )
+                        Text(
+                            text = "✓ Gunakan opsi ini jika kamu baru saja mengedit spreadsheet atau ingin memulihkan riwayat salat ke HP.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = AmberGold
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showConfirmPullFromCloudDialog = false
+                            viewModel.onSelectSyncCloudToLocal()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = AmberGold),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text("Ya, Tarik Data", color = Color.Black, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showConfirmPullFromCloudDialog = false }) {
                         Text("Batal", color = TextSecondary)
                     }
                 }

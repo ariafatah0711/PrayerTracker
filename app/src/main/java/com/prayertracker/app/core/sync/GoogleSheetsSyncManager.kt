@@ -29,11 +29,13 @@ class GoogleSheetsSyncManager(
     private val httpClient = OkHttpClient()
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+    private val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
     private val SPREADSHEET_TITLE = "Prayer Tracker - Catatan Ibadah"
     private val SHEETS_API_BASE = "https://sheets.googleapis.com/v4/spreadsheets"
     private val DRIVE_FILES_BASE = "https://www.googleapis.com/drive/v3/files"
 
+    /** Format epoch ke HH:mm untuk kolom Jadwal Masuk & Batas Akhir */
     private fun formatEpoch(epoch: Long?): String {
         if (epoch == null || epoch <= 0) return "-"
         return try {
@@ -43,6 +45,42 @@ class GoogleSheetsSyncManager(
         } catch (_: Exception) {
             "-"
         }
+    }
+
+    /** Format epoch ke yyyy-MM-dd HH:mm untuk kolom Jam Selesai — menghindari ambiguitas tengah malam */
+    private fun formatEpochWithDate(epoch: Long?): String {
+        if (epoch == null || epoch <= 0) return "-"
+        return try {
+            Instant.ofEpochMilli(epoch)
+                .atZone(ZoneId.systemDefault())
+                .format(dateTimeFormatter)
+        } catch (_: Exception) {
+            "-"
+        }
+    }
+
+    /**
+     * Parse nilai kolom Jam Selesai dari sheet menjadi epoch milli.
+     * Mendukung dua format:
+     *   - Format baru: "yyyy-MM-dd HH:mm"  → epoch langsung tanpa ambiguitas
+     *   - Format lama: "HH:mm"              → epoch gabung dengan rDate; jika hasilnya lebih kecil dari schedEpoch, tambahkan 24 jam
+     */
+    private fun parseJamSelesaiToEpoch(jamSelesaiStr: String, rDate: String, schedEpoch: Long): Long {
+        if (jamSelesaiStr.isBlank() || jamSelesaiStr == "-") return 0L
+        val clean = jamSelesaiStr.replace("WIB", "").replace("WITA", "").replace("WIT", "")
+            .replace("(Qadha)", "").trim()
+        // Format baru: yyyy-MM-dd HH:mm
+        if (clean.matches(Regex("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}"))) {
+            return try {
+                val ldt = java.time.LocalDateTime.parse(clean, dateTimeFormatter)
+                ldt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+            } catch (_: Exception) { 0L }
+        }
+        // Format lama: HH:mm
+        val parsed = parseTimeToEpoch(rDate, clean)
+        if (parsed <= 0L) return 0L
+        // Jika jam selesai lebih kecil dari jam masuk, tandanya melewati tengah malam → +1 hari
+        return if (schedEpoch > 0 && parsed < schedEpoch) parsed + 86400000L else parsed
     }
 
     /**
@@ -69,10 +107,15 @@ class GoogleSheetsSyncManager(
         return when (status) {
             PrayerStatus.COMPLETED -> {
                 val doneAt = completedAtEpoch ?: scheduledTimeEpoch
+                var effEnd = endTimeEpoch
+                // Jika batas akhir lebih kecil dari jadwal mulai (kasus Isya yang berakhir subuh besoknya)
+                if (effEnd > 0 && scheduledTimeEpoch > 0 && effEnd <= scheduledTimeEpoch) {
+                    effEnd += 24 * 60 * 60 * 1000L
+                }
                 when {
                     doneAt <= scheduledTimeEpoch + EARLY_WINDOW_MS -> "Tepat Waktu (Awal Waktu)"
-                    doneAt <= endTimeEpoch - LATE_WINDOW_MS -> "Tepat Waktu"
-                    doneAt <= endTimeEpoch -> "Tepat Waktu (Akhir Waktu)"
+                    doneAt <= effEnd - LATE_WINDOW_MS -> "Tepat Waktu"
+                    doneAt <= effEnd -> "Tepat Waktu (Akhir Waktu)"
                     else -> "Qadha Selesai" // selesai tapi melewati batas akhir
                 }
             }
@@ -140,16 +183,6 @@ class GoogleSheetsSyncManager(
                             val rStatusIbadah = rRow.optString(6, "").trim()
                             val rKeterangan = rRow.optString(7, "").trim()
 
-                            val isRemoteDone = rStatusIbadah.equals("Sudah", ignoreCase = true) ||
-                                               rStatusIbadah.equals("Selesai", ignoreCase = true) ||
-                                               rStatusIbadah.startsWith("Sudah", ignoreCase = true) ||
-                                               rStatusIbadah.equals("Done", ignoreCase = true) ||
-                                               rStatusIbadah.equals("Ya", ignoreCase = true) ||
-                                               rStatusIbadah.contains("✓")
-
-                            val isRemoteQadha = rKeterangan.contains("Qadha", ignoreCase = true) ||
-                                               rJamSelesai.contains("Qadha", ignoreCase = true) ||
-                                               rStatusIbadah.contains("Qadha", ignoreCase = true)
                             val nowEpoch = System.currentTimeMillis()
 
                             // Cari entitas lokal baik dengan ID maupun pasangan (Nama Salat + Tanggal)
@@ -162,7 +195,35 @@ class GoogleSheetsSyncManager(
                             val parsedSched = parseTimeToEpoch(rDate, rJadwal)
                             val parsedEnd = parseTimeToEpoch(rDate, rBatas)
                             val schedEpoch = if (parsedSched > 0) parsedSched else (localPrayer?.scheduledTimeEpoch ?: nowEpoch)
-                            val endEpoch = if (parsedEnd > 0) parsedEnd else (localPrayer?.endTimeEpoch ?: (schedEpoch + 3600000))
+                            var endEpoch = if (parsedEnd > 0) parsedEnd else (localPrayer?.endTimeEpoch ?: (schedEpoch + 3600000))
+
+                            // PENTING: Untuk salat Isya (atau salat apa pun yang batas akhirnya melewati tengah malam),
+                            // endEpoch (misal 04:30 Subuh) akan lebih kecil atau sama dengan schedEpoch (misal 19:01 Isya).
+                            // Tambahkan 24 jam (+1 hari / 86400000 ms) agar batas akhir akurat di pagi hari berikutnya,
+                            // sehingga tidak dianggap kadaluarsa/terlewat (Qadha) saat dicek di pagi hari!
+                            if (endEpoch > 0 && schedEpoch > 0 && endEpoch <= schedEpoch) {
+                                endEpoch += 24 * 60 * 60 * 1000L
+                            }
+
+                            // Dinamis: Nilai Jam Selesai menjadi pemicu utama status ibadah
+                            val parsedDone = parseJamSelesaiToEpoch(rJamSelesai, rDate, schedEpoch)
+                            val hasDoneTime = parsedDone > 0L
+
+                            val isRemoteDone = hasDoneTime ||
+                                               rStatusIbadah.equals("Sudah", ignoreCase = true) ||
+                                               rStatusIbadah.equals("Selesai", ignoreCase = true) ||
+                                               rStatusIbadah.startsWith("Sudah", ignoreCase = true) ||
+                                               rStatusIbadah.equals("Done", ignoreCase = true) ||
+                                               rStatusIbadah.equals("Ya", ignoreCase = true) ||
+                                               rStatusIbadah.contains("✓")
+
+                            val isRemoteQadha = if (hasDoneTime) {
+                                parsedDone > endEpoch
+                            } else {
+                                rKeterangan.contains("Qadha", ignoreCase = true) ||
+                                rJamSelesai.contains("Qadha", ignoreCase = true) ||
+                                rStatusIbadah.contains("Qadha", ignoreCase = true)
+                            }
 
                             val targetStatus = if (isRemoteDone) {
                                 if (isRemoteQadha) PrayerStatus.QADHA_COMPLETED else PrayerStatus.COMPLETED
@@ -171,19 +232,21 @@ class GoogleSheetsSyncManager(
                             }
 
                             val targetCompletedAt: Long? = if (isRemoteDone) {
-                                val parsedDone = parseTimeToEpoch(rDate, rJamSelesai)
-                                if (parsedDone > 0) parsedDone else (localPrayer?.completedAtEpoch ?: schedEpoch)
+                                if (hasDoneTime) parsedDone else (localPrayer?.completedAtEpoch ?: schedEpoch)
                             } else {
                                 null
                             }
 
                             if (localPrayer != null) {
-                                database.prayerRecordDao().updateStatus(
-                                    id = localPrayer.id,
+                                val updatedPrayer = localPrayer.copy(
+                                    scheduledTimeEpoch = schedEpoch,
+                                    endTimeEpoch = endEpoch,
                                     status = targetStatus,
-                                    completedAt = targetCompletedAt,
-                                    syncStatus = SyncStatus.SYNCED
+                                    completedAtEpoch = targetCompletedAt,
+                                    syncStatus = SyncStatus.SYNCED,
+                                    updatedAtEpoch = nowEpoch
                                 )
+                                database.prayerRecordDao().update(updatedPrayer)
                             } else {
                                 // Buat entitas baru jika belum ada di database lokal
                                 val newPrayer = PrayerRecordEntity(
@@ -244,20 +307,34 @@ class GoogleSheetsSyncManager(
             e.printStackTrace()
         }
 
-        // 2. Baca tab "Ringkasan" untuk menangkap editan langsung user pada tab pertama
+        // 2. Baca tab "Ringkasan Harian" (atau "Ringkasan" lama) untuk menangkap editan langsung user pada tab pertama
         try {
-            val ringkasanRange = java.net.URLEncoder.encode("'Ringkasan'!A2:F1000", "UTF-8")
-            // Gunakan valueRenderOption=FORMULA agar kita tahu sel mana yang merupakan rumus bawaan vs editan manual user
-            val ringkasanUrl = "$SHEETS_API_BASE/$spreadsheetId/values/$ringkasanRange?valueRenderOption=FORMULA"
-            val ringkasanReq = Request.Builder()
+            var ringkasanTitle = "Ringkasan Harian"
+            var ringkasanRange = java.net.URLEncoder.encode("'$ringkasanTitle'!A2:F1000", "UTF-8")
+            var ringkasanUrl = "$SHEETS_API_BASE/$spreadsheetId/values/$ringkasanRange?valueRenderOption=FORMULA"
+            var ringkasanReq = Request.Builder()
                 .url(ringkasanUrl)
                 .addHeader("Authorization", "Bearer $token")
                 .get()
                 .build()
 
-            httpClient.newCall(ringkasanReq).execute().use { ringkasanRes ->
-                if (ringkasanRes.isSuccessful) {
-                    val rJson = JSONObject(ringkasanRes.body?.string() ?: "")
+            var ringkasanRes = httpClient.newCall(ringkasanReq).execute()
+            if (!ringkasanRes.isSuccessful && ringkasanRes.code == 400) {
+                ringkasanRes.close()
+                ringkasanTitle = "Ringkasan"
+                ringkasanRange = java.net.URLEncoder.encode("'$ringkasanTitle'!A2:F1000", "UTF-8")
+                ringkasanUrl = "$SHEETS_API_BASE/$spreadsheetId/values/$ringkasanRange?valueRenderOption=FORMULA"
+                ringkasanReq = Request.Builder()
+                    .url(ringkasanUrl)
+                    .addHeader("Authorization", "Bearer $token")
+                    .get()
+                    .build()
+                ringkasanRes = httpClient.newCall(ringkasanReq).execute()
+            }
+
+            ringkasanRes.use { res ->
+                if (res.isSuccessful) {
+                    val rJson = JSONObject(res.body?.string() ?: "")
                     val rValues = rJson.optJSONArray("values")
                     if (rValues != null && rValues.length() > 0) {
                         val prayerNamesByCol = listOf(
@@ -302,13 +379,19 @@ class GoogleSheetsSyncManager(
                                     )
                                     database.qadhaRecordDao().deleteByPrayerRecordId(localPrayer.id)
                                 } else if (cellValue.equals("Belum", ignoreCase = true) || cellValue.equals("Terlewat", ignoreCase = true)) {
-                                    val revertStatus = if (nowEpoch > localPrayer.endTimeEpoch) PrayerStatus.MISSED else PrayerStatus.PENDING
-                                    database.prayerRecordDao().updateStatus(
-                                        id = localPrayer.id,
+                                    var effEnd = localPrayer.endTimeEpoch
+                                    if (effEnd > 0 && localPrayer.scheduledTimeEpoch > 0 && effEnd <= localPrayer.scheduledTimeEpoch) {
+                                        effEnd += 24 * 60 * 60 * 1000L
+                                    }
+                                    val revertStatus = if (nowEpoch > effEnd) PrayerStatus.MISSED else PrayerStatus.PENDING
+                                    val updated = localPrayer.copy(
                                         status = revertStatus,
-                                        completedAt = null,
-                                        syncStatus = SyncStatus.SYNCED
+                                        endTimeEpoch = effEnd,
+                                        completedAtEpoch = null,
+                                        syncStatus = SyncStatus.SYNCED,
+                                        updatedAtEpoch = nowEpoch
                                     )
+                                    database.prayerRecordDao().update(updated)
                                     database.qadhaRecordDao().deleteByPrayerRecordId(localPrayer.id)
                                 }
                             }
@@ -375,13 +458,13 @@ class GoogleSheetsSyncManager(
             // 3. Ambil seluruh data ibadah dari database lokal (termasuk hasil rekonsiliasi terbaru)
             val allPrayers = database.prayerRecordDao().getAllPrayers()
             if (allPrayers.isEmpty()) {
-                // Inisialisasi header untuk ketiga sheet agar spreadsheet baru tidak kosong melompong
+                // Inisialisasi header untuk keempat sheet agar spreadsheet baru tidak kosong melompong
                 try {
                     val initPayload = JSONObject().apply {
                         put("valueInputOption", "USER_ENTERED")
                         put("data", JSONArray().apply {
                             put(JSONObject().apply {
-                                put("range", "'Ringkasan'!A1:G1")
+                                put("range", "'Ringkasan Harian'!A1:G1")
                                 put("majorDimension", "ROWS")
                                 put("values", JSONArray().put(ringkasanHeader))
                             })
@@ -411,14 +494,14 @@ class GoogleSheetsSyncManager(
 
             // Urutkan tanggal secara menurun (hari ini paling atas)
             val dates = allPrayers.map { it.prayerDate }.distinct().sortedDescending()
+            val s = "$"
 
             // -----------------------------------------------------------------
-            // SHEET 1: "Ringkasan" (Overview Dinamis Terhubung Langsung ke Data Mentah)
+            // SHEET 1: "Ringkasan Harian" (Overview Dinamis Terhubung ke Data Mentah)
             // -----------------------------------------------------------------
             val ringkasanRows = JSONArray()
             ringkasanRows.put(ringkasanHeader)
 
-            val s = "$"
             dates.forEachIndexed { idx, date ->
                 val r = idx + 2 // Baris 1-indexed di Google Sheets (Header di baris 1, data mulai baris 2)
                 val row = JSONArray().apply {
@@ -434,7 +517,108 @@ class GoogleSheetsSyncManager(
             }
 
             // -----------------------------------------------------------------
-            // SHEET 2: "Rekap Waktu" (Jam Selesai Dinamis Terhubung Langsung ke Data Mentah)
+            // SHEET 2: "Ringkasan Mingguan" (Compact: Senin-Minggu x 5 Salat S-D-A-M-I)
+            // -----------------------------------------------------------------
+            val mingguanRows = JSONArray()
+
+            // Header Baris 1: Hari dalam Seminggu
+            val h1 = JSONArray().apply {
+                put("Bulan")
+                put("Minggu")
+                put("Rentang Tanggal")
+                val days = listOf("Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu")
+                days.forEach { dayName ->
+                    put(dayName)
+                    put("")
+                    put("")
+                    put("")
+                    put("")
+                }
+                put("Total Selesai")
+            }
+            mingguanRows.put(h1)
+
+            // Header Baris 2: Sub-kolom Waktu Salat (S, D, A, M, I)
+            val h2 = JSONArray().apply {
+                put("")
+                put("")
+                put("")
+                for (i in 0..6) {
+                    put("S")
+                    put("D")
+                    put("A")
+                    put("M")
+                    put("I")
+                }
+                put("Target: 35")
+            }
+            mingguanRows.put(h2)
+
+            // Kumpulkan semua tanggal dari allPrayers, parse ke LocalDate
+            val prayerDates = allPrayers.mapNotNull {
+                try { java.time.LocalDate.parse(it.prayerDate) } catch (_: Exception) { null }
+            }.distinct()
+
+            val earliestDate = prayerDates.minOrNull() ?: java.time.LocalDate.now()
+            val today = java.time.LocalDate.now()
+
+            // Kelompokkan per minggu (Senin - Minggu)
+            val weekStarts = prayerDates.map {
+                it.with(java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY))
+            }.distinct().sortedDescending() // Minggu terbaru paling atas
+
+            val prayersOrder = listOf(
+                PrayerName.FAJR,
+                PrayerName.DHUHR,
+                PrayerName.ASR,
+                PrayerName.MAGHRIB,
+                PrayerName.ISHA
+            )
+            val monthFormat = java.time.format.DateTimeFormatter.ofPattern("MMMM yyyy", java.util.Locale("id", "ID"))
+            val rangeFormat = java.time.format.DateTimeFormatter.ofPattern("d MMM", java.util.Locale("id", "ID"))
+
+            weekStarts.forEachIndexed { idx, monday ->
+                val r = idx + 3 // 1-indexed row: Baris 1 & 2 adalah header, data mulai baris 3
+                val sunday = monday.plusDays(6)
+                val weekOfMonth = monday.get(java.time.temporal.WeekFields.of(java.util.Locale("id", "ID")).weekOfMonth())
+                val bulanStr = monthFormat.format(monday)
+                val mingguStr = "Minggu $weekOfMonth"
+                val rentangStr = "${rangeFormat.format(monday)} - ${rangeFormat.format(sunday)}"
+
+                val row = JSONArray().apply {
+                    put(bulanStr)
+                    put(mingguStr)
+                    put(rentangStr)
+
+                    // 7 Hari x 5 Salat = 35 sel
+                    for (dayOffset in 0..6) {
+                        val currentDay = monday.plusDays(dayOffset.toLong())
+                        val dateStr = currentDay.toString()
+
+                        // Jika hari ini sebelum tanggal mulai aplikasi (belum download aplikasi) ATAU tanggal di masa depan:
+                        // Kosongkan sel ("") agar tidak dianggap strip/terlewat!
+                        if (currentDay < earliestDate || currentDay > today) {
+                            for (pName in prayersOrder) {
+                                put("")
+                            }
+                        } else {
+                            for (pName in prayersOrder) {
+                                val pDisplayName = pName.displayName
+                                // Formula dinamis yang terhubung langsung ke sheet Data Mentah (mendukung format tanggal DATE dan teks string)
+                                val formula = "=IF(OR(COUNTIFS('Data Mentah'!${s}B:${s}B$sep DATE(${currentDay.year}$sep ${currentDay.monthValue}$sep ${currentDay.dayOfMonth})$sep 'Data Mentah'!${s}C:${s}C$sep \"$pDisplayName\"$sep 'Data Mentah'!${s}G:${s}G$sep \"Sudah*\")>0$sep COUNTIFS('Data Mentah'!${s}B:${s}B$sep \"$dateStr\"$sep 'Data Mentah'!${s}C:${s}C$sep \"$pDisplayName\"$sep 'Data Mentah'!${s}G:${s}G$sep \"Sudah*\")>0)$sep \"✓\"$sep \"-\")"
+                                put(formula)
+                            }
+                        }
+                    }
+
+                    // Kolom AM (Total Selesai): Formula hitung centang ✓ dibanding total salat aktif (✓ + -)
+                    put("=IF((COUNTIF(D$r:AL$r$sep \"✓\") + COUNTIF(D$r:AL$r$sep \"-\"))=0$sep \"-\"$sep COUNTIF(D$r:AL$r$sep \"✓\") & \" / \" & (COUNTIF(D$r:AL$r$sep \"✓\") + COUNTIF(D$r:AL$r$sep \"-\")) & \" Selesai\")")
+                }
+                mingguanRows.put(row)
+            }
+
+            // -----------------------------------------------------------------
+            // SHEET 3: "Rekap Waktu" (Jam Selesai Dinamis Terhubung Langsung ke Data Mentah)
             // -----------------------------------------------------------------
             val rekapWaktuRows = JSONArray()
             rekapWaktuRows.put(rekapWaktuHeader)
@@ -458,21 +642,28 @@ class GoogleSheetsSyncManager(
             }
 
             // -----------------------------------------------------------------
-            // SHEET 3: "Data Mentah" (Rapi, Human-Friendly dengan ID Unik Teks)
+            // SHEET 4: "Data Mentah" (Rapi, Human-Friendly dengan ID Unik Teks)
             // -----------------------------------------------------------------
             val rawRows = JSONArray()
             rawRows.put(rawHeader)
 
-            allPrayers.forEach { p ->
+            allPrayers.forEachIndexed { idx, p ->
+                val r = idx + 2 // 1-indexed baris di Sheet Data Mentah (header di baris 1)
                 val isDone = p.status == PrayerStatus.COMPLETED || p.status == PrayerStatus.QADHA_COMPLETED
-                val statusIbadah = if (isDone) "Sudah" else "Belum"
-                val jamSelesai = if (isDone) formatEpoch(p.completedAtEpoch ?: p.scheduledTimeEpoch) else "-"
+                val jamSelesai = if (isDone) formatEpochWithDate(p.completedAtEpoch ?: p.scheduledTimeEpoch) else "-"
                 val keterangan = resolveKeterangan(
                     status = p.status,
                     completedAtEpoch = p.completedAtEpoch,
                     scheduledTimeEpoch = p.scheduledTimeEpoch,
                     endTimeEpoch = p.endTimeEpoch
                 )
+
+                // Formula dinamis:
+                // Status Ibadah (Kolom G): Jika Jam Selesai kosong atau "-", otomatis "Belum", jika ada isinya otomatis "Sudah"
+                val statusFormula = "=IF(OR(${s}F$r=\"\"$sep ${s}F$r=\"-\")$sep \"Belum\"$sep \"Sudah\")"
+
+                // Keterangan (Kolom H): Dinamis mengikuti Jam Selesai
+                val keteranganFormula = "=IF(OR(${s}F$r=\"\"$sep ${s}F$r=\"-\")$sep \"Belum Salat\"$sep \"$keterangan\")"
 
                 val row = JSONArray().apply {
                     put(p.id)
@@ -481,19 +672,20 @@ class GoogleSheetsSyncManager(
                     put(formatEpoch(p.scheduledTimeEpoch))
                     put(formatEpoch(p.endTimeEpoch))
                     put(jamSelesai)
-                    put(statusIbadah)
-                    put(keterangan)
+                    put(statusFormula)
+                    put(keteranganFormula)
                 }
                 rawRows.put(row)
             }
 
-            // 4. Batch Clear area sheet terlebih dahulu agar tidak ada data lama yang tersisa
+            // 4. Batch Clear area sheet terlebih dahulu agar tidak ada data lama yang tersisa (dipangkas sesuai kolom aktif)
             try {
                 val clearPayload = JSONObject().apply {
                     put("ranges", JSONArray().apply {
-                        put("'Ringkasan'!A1:Z500")
-                        put("'Rekap Waktu'!A1:Z500")
-                        put("'Data Mentah'!A1:Z1000")
+                        put("'Ringkasan Harian'!A1:G500")
+                        put("'Ringkasan Mingguan'!A1:AM500")
+                        put("'Rekap Waktu'!A1:G500")
+                        put("'Data Mentah'!A1:H1000")
                     })
                 }
                 val clearReq = Request.Builder()
@@ -506,14 +698,19 @@ class GoogleSheetsSyncManager(
                 // Abaikan jika sheet baru
             }
 
-            // 5. Batch Update values ketiga sheet sekaligus
+            // 5. Batch Update values keempat sheet sekaligus
             val updatePayload = JSONObject().apply {
                 put("valueInputOption", "USER_ENTERED")
                 put("data", JSONArray().apply {
                     put(JSONObject().apply {
-                        put("range", "'Ringkasan'!A1:G${ringkasanRows.length()}")
+                        put("range", "'Ringkasan Harian'!A1:G${ringkasanRows.length()}")
                         put("majorDimension", "ROWS")
                         put("values", ringkasanRows)
+                    })
+                    put(JSONObject().apply {
+                        put("range", "'Ringkasan Mingguan'!A1:AM${mingguanRows.length()}")
+                        put("majorDimension", "ROWS")
+                        put("values", mingguanRows)
                     })
                     put(JSONObject().apply {
                         put("range", "'Rekap Waktu'!A1:G${rekapWaktuRows.length()}")
@@ -655,10 +852,14 @@ class GoogleSheetsSyncManager(
 
             val existingTitles = mutableListOf<String>()
             var firstSheetId: Int? = null
-            var ringkasanSheetId: Int? = null
+            var ringkasanHarianSheetId: Int? = null
+            var ringkasanMingguanSheetId: Int? = null
             var rekapWaktuSheetId: Int? = null
             var dataMentahSheetId: Int? = null
-            var ringkasanHasConditionalFormatting = false
+            var ringkasanHarianHasConditionalFormatting = false
+            var ringkasanMingguanHasConditionalFormatting = false
+            var rekapWaktuHasConditionalFormatting = false
+            var dataMentahHasConditionalFormatting = false
 
             for (i in 0 until sheetsArray.length()) {
                 val sheetObj = sheetsArray.getJSONObject(i)
@@ -667,34 +868,81 @@ class GoogleSheetsSyncManager(
                 val sheetId = props.getInt("sheetId")
                 existingTitles.add(title)
                 if (i == 0) firstSheetId = sheetId
-                if (title == "Ringkasan") {
-                    ringkasanSheetId = sheetId
+                if (title == "Ringkasan Harian" || title == "Ringkasan") {
+                    ringkasanHarianSheetId = sheetId
                     val cFormats = sheetObj.optJSONArray("conditionalFormats")
                     if (cFormats != null && cFormats.length() > 0) {
-                        ringkasanHasConditionalFormatting = true
+                        ringkasanHarianHasConditionalFormatting = true
                     }
                 }
-                if (title == "Rekap Waktu") rekapWaktuSheetId = sheetId
-                if (title == "Data Mentah") dataMentahSheetId = sheetId
+                if (title == "Ringkasan Mingguan") {
+                    ringkasanMingguanSheetId = sheetId
+                    val cFormats = sheetObj.optJSONArray("conditionalFormats")
+                    if (cFormats != null && cFormats.length() > 0) {
+                        ringkasanMingguanHasConditionalFormatting = true
+                    }
+                }
+                if (title == "Rekap Waktu") {
+                    rekapWaktuSheetId = sheetId
+                    val cFormats = sheetObj.optJSONArray("conditionalFormats")
+                    if (cFormats != null && cFormats.length() > 0) {
+                        rekapWaktuHasConditionalFormatting = true
+                    }
+                }
+                if (title == "Data Mentah") {
+                    dataMentahSheetId = sheetId
+                    val cFormats = sheetObj.optJSONArray("conditionalFormats")
+                    if (cFormats != null && cFormats.length() > 0) {
+                        dataMentahHasConditionalFormatting = true
+                    }
+                }
             }
 
             val batchRequests = JSONArray()
 
-            // 1. Rename sheet pertama jika belum bernama "Ringkasan"
-            if (!existingTitles.contains("Ringkasan") && firstSheetId != null) {
+            // 1. Rename sheet pertama jika masih bernama "Ringkasan" -> "Ringkasan Harian"
+            if (existingTitles.contains("Ringkasan") && !existingTitles.contains("Ringkasan Harian")) {
+                val rId = ringkasanHarianSheetId ?: firstSheetId
+                if (rId != null) {
+                    batchRequests.put(JSONObject().apply {
+                        put("updateSheetProperties", JSONObject().apply {
+                            put("properties", JSONObject().apply {
+                                put("sheetId", rId)
+                                put("title", "Ringkasan Harian")
+                            })
+                            put("fields", "title")
+                        })
+                    })
+                    ringkasanHarianSheetId = rId
+                }
+            } else if (!existingTitles.contains("Ringkasan Harian") && firstSheetId != null) {
                 batchRequests.put(JSONObject().apply {
                     put("updateSheetProperties", JSONObject().apply {
                         put("properties", JSONObject().apply {
                             put("sheetId", firstSheetId)
-                            put("title", "Ringkasan")
+                            put("title", "Ringkasan Harian")
                         })
                         put("fields", "title")
                     })
                 })
-                ringkasanSheetId = firstSheetId
+                ringkasanHarianSheetId = firstSheetId
             }
 
-            // 2. Tambah "Rekap Waktu" jika belum ada
+            // 2. Tambah "Ringkasan Mingguan" jika belum ada
+            if (!existingTitles.contains("Ringkasan Mingguan")) {
+                ringkasanMingguanSheetId = 104
+                batchRequests.put(JSONObject().apply {
+                    put("addSheet", JSONObject().apply {
+                        put("properties", JSONObject().apply {
+                            put("sheetId", ringkasanMingguanSheetId)
+                            put("title", "Ringkasan Mingguan")
+                            put("index", 1)
+                        })
+                    })
+                })
+            }
+
+            // 3. Tambah "Rekap Waktu" jika belum ada
             if (!existingTitles.contains("Rekap Waktu")) {
                 rekapWaktuSheetId = 101
                 batchRequests.put(JSONObject().apply {
@@ -702,12 +950,13 @@ class GoogleSheetsSyncManager(
                         put("properties", JSONObject().apply {
                             put("sheetId", rekapWaktuSheetId)
                             put("title", "Rekap Waktu")
+                            put("index", 2)
                         })
                     })
                 })
             }
 
-            // 3. Tambah "Data Mentah" jika belum ada
+            // 4. Tambah "Data Mentah" jika belum ada
             if (!existingTitles.contains("Data Mentah")) {
                 dataMentahSheetId = 102
                 batchRequests.put(JSONObject().apply {
@@ -715,14 +964,15 @@ class GoogleSheetsSyncManager(
                         put("properties", JSONObject().apply {
                             put("sheetId", dataMentahSheetId)
                             put("title", "Data Mentah")
+                            put("index", 3)
                         })
                     })
                 })
             }
 
-            // 4. Hapus Garis Kisi (hideGridlines: true) & Bekukan Baris Header (frozenRowCount: 1)
-            val allSheetIds = listOfNotNull(ringkasanSheetId, rekapWaktuSheetId, dataMentahSheetId)
-            allSheetIds.forEach { sId ->
+            // 5. Hapus Garis Kisi (hideGridlines: true), Bekukan Baris Header,
+            // dan PANGKAS KOLOM BERLEBIH agar sheet bersih dan rapi!
+            ringkasanHarianSheetId?.let { sId ->
                 batchRequests.put(JSONObject().apply {
                     put("updateSheetProperties", JSONObject().apply {
                         put("properties", JSONObject().apply {
@@ -730,16 +980,65 @@ class GoogleSheetsSyncManager(
                             put("gridProperties", JSONObject().apply {
                                 put("frozenRowCount", 1)
                                 put("hideGridlines", true)
+                                put("columnCount", 7) // Hanya Kolom A - G
                             })
                         })
-                        put("fields", "gridProperties.frozenRowCount,gridProperties.hideGridlines")
+                        put("fields", "gridProperties.frozenRowCount,gridProperties.hideGridlines,gridProperties.columnCount")
                     })
                 })
             }
 
-            // 5. Header Styling: Background Hijau Emerald Elegan (#1B4D3E), Teks Putih Tebal (Bold), Rata Tengah
-            // Ringkasan: 7 kolom (0..7)
-            ringkasanSheetId?.let { sId ->
+            ringkasanMingguanSheetId?.let { sId ->
+                batchRequests.put(JSONObject().apply {
+                    put("updateSheetProperties", JSONObject().apply {
+                        put("properties", JSONObject().apply {
+                            put("sheetId", sId)
+                            put("gridProperties", JSONObject().apply {
+                                put("frozenRowCount", 2) // Bekukan 2 baris header
+                                put("hideGridlines", true)
+                                put("columnCount", 39) // Kolom A s.d. AM
+                            })
+                        })
+                        put("fields", "gridProperties.frozenRowCount,gridProperties.hideGridlines,gridProperties.columnCount")
+                    })
+                })
+            }
+
+            rekapWaktuSheetId?.let { sId ->
+                batchRequests.put(JSONObject().apply {
+                    put("updateSheetProperties", JSONObject().apply {
+                        put("properties", JSONObject().apply {
+                            put("sheetId", sId)
+                            put("gridProperties", JSONObject().apply {
+                                put("frozenRowCount", 1)
+                                put("hideGridlines", true)
+                                put("columnCount", 7) // Hanya Kolom A - G
+                            })
+                        })
+                        put("fields", "gridProperties.frozenRowCount,gridProperties.hideGridlines,gridProperties.columnCount")
+                    })
+                })
+            }
+
+            dataMentahSheetId?.let { sId ->
+                batchRequests.put(JSONObject().apply {
+                    put("updateSheetProperties", JSONObject().apply {
+                        put("properties", JSONObject().apply {
+                            put("sheetId", sId)
+                            put("gridProperties", JSONObject().apply {
+                                put("frozenRowCount", 1)
+                                put("hideGridlines", true)
+                                put("columnCount", 8) // Hanya Kolom A - H
+                            })
+                        })
+                        put("fields", "gridProperties.frozenRowCount,gridProperties.hideGridlines,gridProperties.columnCount")
+                    })
+                })
+            }
+
+            // 6. Header Styling: Background Hijau Emerald Elegan (#1B4D3E), Teks Putih Tebal (Bold), Rata Tengah
+            // Ringkasan Harian: 7 kolom (0..7)
+            ringkasanHarianSheetId?.let { sId ->
                 batchRequests.put(createHeaderFormatRequest(sId, 7))
                 batchRequests.put(createCenterAlignmentRequest(sId, 7))
                 batchRequests.put(createDateFormatRequest(sId, 0)) // Kolom Tanggal (indeks 0) format "d MMMM yyyy"
@@ -750,6 +1049,55 @@ class GoogleSheetsSyncManager(
                 batchRequests.put(createColumnWidthRequest(sId, 6, 115))
             }
 
+            // Ringkasan Mingguan: 39 kolom (0..39), 2 baris header + merge cells
+            ringkasanMingguanSheetId?.let { sId ->
+                batchRequests.put(createHeaderFormatRequest(sId, 39, numRows = 2))
+                batchRequests.put(createCenterAlignmentRequest(sId, 39, startRowIndex = 2))
+
+                // Merge cells vertikal baris header 1 & 2 untuk Bulan (0), Minggu (1), Rentang (2), Total (38)
+                listOf(0, 1, 2, 38).forEach { col ->
+                    batchRequests.put(JSONObject().apply {
+                        put("mergeCells", JSONObject().apply {
+                            put("range", JSONObject().apply {
+                                put("sheetId", sId)
+                                put("startRowIndex", 0)
+                                put("endRowIndex", 2)
+                                put("startColumnIndex", col)
+                                put("endColumnIndex", col + 1)
+                            })
+                            put("mergeType", "MERGE_ALL")
+                        })
+                    })
+                }
+
+                // Merge cells horizontal untuk 7 nama hari (masing-masing 5 kolom waktu salat S, D, A, M, I)
+                for (d in 0..6) {
+                    val startC = 3 + d * 5
+                    val endC = startC + 5
+                    batchRequests.put(JSONObject().apply {
+                        put("mergeCells", JSONObject().apply {
+                            put("range", JSONObject().apply {
+                                put("sheetId", sId)
+                                put("startRowIndex", 0)
+                                put("endRowIndex", 1)
+                                put("startColumnIndex", startC)
+                                put("endColumnIndex", endC)
+                            })
+                            put("mergeType", "MERGE_ALL")
+                        })
+                    })
+                }
+
+                // Lebar kolom compact
+                batchRequests.put(createColumnWidthRequest(sId, 0, 130)) // Bulan
+                batchRequests.put(createColumnWidthRequest(sId, 1, 85))  // Minggu
+                batchRequests.put(createColumnWidthRequest(sId, 2, 130)) // Rentang Tanggal
+                for (col in 3..37) {
+                    batchRequests.put(createColumnWidthRequest(sId, col, 34)) // S, D, A, M, I compact
+                }
+                batchRequests.put(createColumnWidthRequest(sId, 38, 120)) // Total Selesai
+            }
+
             // Rekap Waktu: 7 kolom (0..7)
             rekapWaktuSheetId?.let { sId ->
                 batchRequests.put(createHeaderFormatRequest(sId, 7))
@@ -757,7 +1105,7 @@ class GoogleSheetsSyncManager(
                 batchRequests.put(createDateFormatRequest(sId, 0))
                 batchRequests.put(createColumnWidthRequest(sId, 0, 140))
                 for (col in 1..5) {
-                    batchRequests.put(createColumnWidthRequest(sId, col, 95))
+                    batchRequests.put(createColumnWidthRequest(sId, col, 120)) // Kolom jam + keterangan Qadha diperlebar
                     batchRequests.put(createTextFormatRequest(sId, col))
                 }
                 batchRequests.put(createColumnWidthRequest(sId, 6, 115))
@@ -774,94 +1122,124 @@ class GoogleSheetsSyncManager(
                 batchRequests.put(createColumnWidthRequest(sId, 2, 85))  // Salat
                 batchRequests.put(createColumnWidthRequest(sId, 3, 95))  // Jadwal Masuk
                 batchRequests.put(createColumnWidthRequest(sId, 4, 95))  // Batas Akhir
-                batchRequests.put(createColumnWidthRequest(sId, 5, 95))  // Jam Selesai
+                batchRequests.put(createColumnWidthRequest(sId, 5, 145)) // Jam Selesai (format yyyy-MM-dd HH:mm)
                 batchRequests.put(createColumnWidthRequest(sId, 6, 95))  // Status Ibadah
-                batchRequests.put(createColumnWidthRequest(sId, 7, 140)) // Keterangan
+                batchRequests.put(createColumnWidthRequest(sId, 7, 170)) // Keterangan
             }
 
-            // 6. Conditional Formatting Warna Lembut pada "Ringkasan" (Sudah: Hijau, Belum: Merah)
-            if (!ringkasanHasConditionalFormatting && ringkasanSheetId != null) {
+            // 7. Conditional Formatting Warna Lembut pada "Ringkasan Harian" (Sudah: Hijau, Belum: Merah)
+            if (!ringkasanHarianHasConditionalFormatting && ringkasanHarianSheetId != null) {
                 // Rule: "Sudah" -> Hijau Lembut
-                batchRequests.put(JSONObject().apply {
-                    put("addConditionalFormatRule", JSONObject().apply {
-                        put("rule", JSONObject().apply {
-                            put("ranges", JSONArray().apply {
-                                put(JSONObject().apply {
-                                    put("sheetId", ringkasanSheetId)
-                                    put("startRowIndex", 1)
-                                    put("endRowIndex", 1000)
-                                    put("startColumnIndex", 1)
-                                    put("endColumnIndex", 6)
-                                })
-                            })
-                            put("booleanRule", JSONObject().apply {
-                                put("condition", JSONObject().apply {
-                                    put("type", "TEXT_EQ")
-                                    put("values", JSONArray().apply {
-                                        put(JSONObject().apply { put("userEnteredValue", "Sudah") })
-                                    })
-                                })
-                                put("format", JSONObject().apply {
-                                    put("backgroundColor", JSONObject().apply {
-                                        put("red", 0.90f)
-                                        put("green", 0.96f)
-                                        put("blue", 0.92f)
-                                    })
-                                    put("textFormat", JSONObject().apply {
-                                        put("foregroundColor", JSONObject().apply {
-                                            put("red", 0.08f)
-                                            put("green", 0.45f)
-                                            put("blue", 0.20f)
-                                        })
-                                        put("bold", true)
-                                    })
-                                })
-                            })
-                        })
-                        put("index", 0)
-                    })
-                })
-
+                batchRequests.put(createConditionalFormatRule(
+                    sheetId = ringkasanHarianSheetId,
+                    startRow = 1, endRow = 1000, startCol = 1, endCol = 6,
+                    conditionType = "TEXT_EQ", conditionValue = "Sudah",
+                    bgRed = 0.90f, bgGreen = 0.96f, bgBlue = 0.92f,
+                    textRed = 0.08f, textGreen = 0.45f, textBlue = 0.20f,
+                    index = 0
+                ))
                 // Rule: "Belum" -> Merah Lembut
-                batchRequests.put(JSONObject().apply {
-                    put("addConditionalFormatRule", JSONObject().apply {
-                        put("rule", JSONObject().apply {
-                            put("ranges", JSONArray().apply {
-                                put(JSONObject().apply {
-                                    put("sheetId", ringkasanSheetId)
-                                    put("startRowIndex", 1)
-                                    put("endRowIndex", 1000)
-                                    put("startColumnIndex", 1)
-                                    put("endColumnIndex", 6)
-                                })
-                            })
-                            put("booleanRule", JSONObject().apply {
-                                put("condition", JSONObject().apply {
-                                    put("type", "TEXT_EQ")
-                                    put("values", JSONArray().apply {
-                                        put(JSONObject().apply { put("userEnteredValue", "Belum") })
-                                    })
-                                })
-                                put("format", JSONObject().apply {
-                                    put("backgroundColor", JSONObject().apply {
-                                        put("red", 0.99f)
-                                        put("green", 0.91f)
-                                        put("blue", 0.91f)
-                                    })
-                                    put("textFormat", JSONObject().apply {
-                                        put("foregroundColor", JSONObject().apply {
-                                            put("red", 0.77f)
-                                            put("green", 0.13f)
-                                            put("blue", 0.12f)
-                                        })
-                                        put("bold", true)
-                                    })
-                                })
-                            })
-                        })
-                        put("index", 1)
-                    })
-                })
+                batchRequests.put(createConditionalFormatRule(
+                    sheetId = ringkasanHarianSheetId,
+                    startRow = 1, endRow = 1000, startCol = 1, endCol = 6,
+                    conditionType = "TEXT_EQ", conditionValue = "Belum",
+                    bgRed = 0.99f, bgGreen = 0.91f, bgBlue = 0.91f,
+                    textRed = 0.77f, textGreen = 0.13f, textBlue = 0.12f,
+                    index = 1
+                ))
+            }
+
+            // 8. Conditional Formatting Warna Lembut pada "Ringkasan Mingguan" (✓: Hijau, -: Merah)
+            if (!ringkasanMingguanHasConditionalFormatting && ringkasanMingguanSheetId != null) {
+                // Rule: "✓" -> Hijau Lembut
+                batchRequests.put(createConditionalFormatRule(
+                    sheetId = ringkasanMingguanSheetId,
+                    startRow = 2, endRow = 1000, startCol = 3, endCol = 38,
+                    conditionType = "TEXT_EQ", conditionValue = "✓",
+                    bgRed = 0.90f, bgGreen = 0.96f, bgBlue = 0.92f,
+                    textRed = 0.08f, textGreen = 0.45f, textBlue = 0.20f,
+                    index = 0
+                ))
+                // Rule: "-" -> Merah Lembut
+                batchRequests.put(createConditionalFormatRule(
+                    sheetId = ringkasanMingguanSheetId,
+                    startRow = 2, endRow = 1000, startCol = 3, endCol = 38,
+                    conditionType = "TEXT_EQ", conditionValue = "-",
+                    bgRed = 0.99f, bgGreen = 0.91f, bgBlue = 0.91f,
+                    textRed = 0.77f, textGreen = 0.13f, textBlue = 0.12f,
+                    index = 1
+                ))
+            }
+
+            // 9. Conditional Formatting Warna Lembut pada "Rekap Waktu" (Qadha: Oranye, Tepat Waktu: Hijau, Belum: Merah)
+            if (!rekapWaktuHasConditionalFormatting && rekapWaktuSheetId != null) {
+                // Rule 1: Ada teks "(Qadha)" -> Oranye Lembut
+                batchRequests.put(createConditionalFormatRule(
+                    sheetId = rekapWaktuSheetId,
+                    startRow = 1, endRow = 1000, startCol = 1, endCol = 6,
+                    conditionType = "TEXT_CONTAINS", conditionValue = "Qadha",
+                    bgRed = 1.0f, bgGreen = 0.95f, bgBlue = 0.82f,
+                    textRed = 0.80f, textGreen = 0.40f, textBlue = 0.05f,
+                    index = 0
+                ))
+                // Rule 2: Ada jam (berisi tanda ":") -> Hijau Lembut
+                batchRequests.put(createConditionalFormatRule(
+                    sheetId = rekapWaktuSheetId,
+                    startRow = 1, endRow = 1000, startCol = 1, endCol = 6,
+                    conditionType = "TEXT_CONTAINS", conditionValue = ":",
+                    bgRed = 0.90f, bgGreen = 0.96f, bgBlue = 0.92f,
+                    textRed = 0.08f, textGreen = 0.45f, textBlue = 0.20f,
+                    index = 1
+                ))
+                // Rule 3: "Belum" -> Merah Lembut
+                batchRequests.put(createConditionalFormatRule(
+                    sheetId = rekapWaktuSheetId,
+                    startRow = 1, endRow = 1000, startCol = 1, endCol = 6,
+                    conditionType = "TEXT_EQ", conditionValue = "Belum",
+                    bgRed = 0.99f, bgGreen = 0.91f, bgBlue = 0.91f,
+                    textRed = 0.77f, textGreen = 0.13f, textBlue = 0.12f,
+                    index = 2
+                ))
+            }
+
+            // 10. Conditional Formatting Warna Lembut pada "Data Mentah"
+            if (!dataMentahHasConditionalFormatting && dataMentahSheetId != null) {
+                // Kolom Status Ibadah (indeks 6): "Sudah" -> Hijau
+                batchRequests.put(createConditionalFormatRule(
+                    sheetId = dataMentahSheetId,
+                    startRow = 1, endRow = 1000, startCol = 6, endCol = 7,
+                    conditionType = "TEXT_EQ", conditionValue = "Sudah",
+                    bgRed = 0.90f, bgGreen = 0.96f, bgBlue = 0.92f,
+                    textRed = 0.08f, textGreen = 0.45f, textBlue = 0.20f,
+                    index = 0
+                ))
+                // Kolom Status Ibadah (indeks 6): "Belum" -> Merah
+                batchRequests.put(createConditionalFormatRule(
+                    sheetId = dataMentahSheetId,
+                    startRow = 1, endRow = 1000, startCol = 6, endCol = 7,
+                    conditionType = "TEXT_EQ", conditionValue = "Belum",
+                    bgRed = 0.99f, bgGreen = 0.91f, bgBlue = 0.91f,
+                    textRed = 0.77f, textGreen = 0.13f, textBlue = 0.12f,
+                    index = 1
+                ))
+                // Kolom Keterangan (indeks 7): "Qadha" -> Oranye
+                batchRequests.put(createConditionalFormatRule(
+                    sheetId = dataMentahSheetId,
+                    startRow = 1, endRow = 1000, startCol = 7, endCol = 8,
+                    conditionType = "TEXT_CONTAINS", conditionValue = "Qadha",
+                    bgRed = 1.0f, bgGreen = 0.95f, bgBlue = 0.82f,
+                    textRed = 0.80f, textGreen = 0.40f, textBlue = 0.05f,
+                    index = 2
+                ))
+                // Kolom Keterangan (indeks 7): "Tepat" -> Hijau
+                batchRequests.put(createConditionalFormatRule(
+                    sheetId = dataMentahSheetId,
+                    startRow = 1, endRow = 1000, startCol = 7, endCol = 8,
+                    conditionType = "TEXT_CONTAINS", conditionValue = "Tepat",
+                    bgRed = 0.90f, bgGreen = 0.96f, bgBlue = 0.92f,
+                    textRed = 0.08f, textGreen = 0.45f, textBlue = 0.20f,
+                    index = 3
+                ))
             }
 
             if (batchRequests.length() > 0) {
@@ -888,12 +1266,66 @@ class GoogleSheetsSyncManager(
         }
     }
 
-    private fun createCenterAlignmentRequest(sheetId: Int, numCols: Int): JSONObject {
+    private fun createConditionalFormatRule(
+        sheetId: Int,
+        startRow: Int,
+        endRow: Int,
+        startCol: Int,
+        endCol: Int,
+        conditionType: String,
+        conditionValue: String,
+        bgRed: Float, bgGreen: Float, bgBlue: Float,
+        textRed: Float, textGreen: Float, textBlue: Float,
+        bold: Boolean = true,
+        index: Int = 0
+    ): JSONObject {
+        return JSONObject().apply {
+            put("addConditionalFormatRule", JSONObject().apply {
+                put("rule", JSONObject().apply {
+                    put("ranges", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("sheetId", sheetId)
+                            put("startRowIndex", startRow)
+                            put("endRowIndex", endRow)
+                            put("startColumnIndex", startCol)
+                            put("endColumnIndex", endCol)
+                        })
+                    })
+                    put("booleanRule", JSONObject().apply {
+                        put("condition", JSONObject().apply {
+                            put("type", conditionType)
+                            put("values", JSONArray().apply {
+                                put(JSONObject().apply { put("userEnteredValue", conditionValue) })
+                            })
+                        })
+                        put("format", JSONObject().apply {
+                            put("backgroundColor", JSONObject().apply {
+                                put("red", bgRed)
+                                put("green", bgGreen)
+                                put("blue", bgBlue)
+                            })
+                            put("textFormat", JSONObject().apply {
+                                put("foregroundColor", JSONObject().apply {
+                                    put("red", textRed)
+                                    put("green", textGreen)
+                                    put("blue", textBlue)
+                                })
+                                put("bold", bold)
+                            })
+                        })
+                    })
+                })
+                put("index", index)
+            })
+        }
+    }
+
+    private fun createCenterAlignmentRequest(sheetId: Int, numCols: Int, startRowIndex: Int = 1): JSONObject {
         return JSONObject().apply {
             put("repeatCell", JSONObject().apply {
                 put("range", JSONObject().apply {
                     put("sheetId", sheetId)
-                    put("startRowIndex", 1)
+                    put("startRowIndex", startRowIndex)
                     put("endRowIndex", 1000)
                     put("startColumnIndex", 0)
                     put("endColumnIndex", numCols)
@@ -909,13 +1341,13 @@ class GoogleSheetsSyncManager(
         }
     }
 
-    private fun createHeaderFormatRequest(sheetId: Int, numCols: Int): JSONObject {
+    private fun createHeaderFormatRequest(sheetId: Int, numCols: Int, numRows: Int = 1): JSONObject {
         return JSONObject().apply {
             put("repeatCell", JSONObject().apply {
                 put("range", JSONObject().apply {
                     put("sheetId", sheetId)
                     put("startRowIndex", 0)
-                    put("endRowIndex", 1)
+                    put("endRowIndex", numRows)
                     put("startColumnIndex", 0)
                     put("endColumnIndex", numCols)
                 })

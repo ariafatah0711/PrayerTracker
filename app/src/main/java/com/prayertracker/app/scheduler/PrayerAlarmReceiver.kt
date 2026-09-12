@@ -60,7 +60,9 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
                                     prayerId = prayerId,
                                     prayerName = prayerName,
                                     timeFormatted = prayer.formattedScheduledTime,
-                                    notificationId = notificationId
+                                    notificationId = notificationId,
+                                    otwMinutes = settings.otwIntervalMinutes,
+                                    noSnoozeMinutes = settings.noSnoozeIntervalMinutes
                                 )
                                 launchOverlay("ENTRY")
                             }
@@ -70,7 +72,8 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
                                 notificationHelper.showOtwFollowUpNotification(
                                     prayerId = prayerId,
                                     prayerName = prayerName,
-                                    notificationId = notificationId
+                                    notificationId = notificationId,
+                                    noSnoozeMinutes = settings.noSnoozeIntervalMinutes
                                 )
                                 launchOverlay("OTW")
                             }
@@ -80,7 +83,9 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
                                 notificationHelper.showSnoozeReminderNotification(
                                     prayerId = prayerId,
                                     prayerName = prayerName,
-                                    notificationId = notificationId
+                                    notificationId = notificationId,
+                                    otwMinutes = settings.otwIntervalMinutes,
+                                    noSnoozeMinutes = settings.noSnoozeIntervalMinutes
                                 )
                                 launchOverlay("SNOOZE")
                             }

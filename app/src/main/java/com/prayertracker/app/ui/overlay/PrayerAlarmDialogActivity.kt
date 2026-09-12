@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Snooze
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,6 +59,7 @@ class PrayerAlarmDialogActivity : ComponentActivity() {
         const val EXTRA_TIME_FORMATTED = "extra_time_formatted"
         const val EXTRA_NOTIFICATION_ID = "extra_notification_id"
         const val EXTRA_ALERT_TYPE = "extra_alert_type" // ENTRY, OTW, SNOOZE
+        const val ACTION_DISMISS_OVERLAY = "com.prayertracker.app.ACTION_DISMISS_OVERLAY"
 
         fun createIntent(
             context: Context,
@@ -81,8 +83,26 @@ class PrayerAlarmDialogActivity : ComponentActivity() {
         }
     }
 
+    private val dismissReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val nId = intent?.getIntExtra(EXTRA_NOTIFICATION_ID, -1) ?: -1
+            val curId = this@PrayerAlarmDialogActivity.intent.getIntExtra(EXTRA_NOTIFICATION_ID, 1001)
+            if (nId == -1 || nId == curId) {
+                finish()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Daftarkan listener penutup otomatis jika user merespon langsung dari banner notifikasi atas
+        val filter = android.content.IntentFilter(ACTION_DISMISS_OVERLAY)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(dismissReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(dismissReceiver, filter)
+        }
 
         // Lockscreen & Screen-on configurations
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
@@ -103,12 +123,17 @@ class PrayerAlarmDialogActivity : ComponentActivity() {
         val notificationId = intent.getIntExtra(EXTRA_NOTIFICATION_ID, 1001)
         val alertType = intent.getStringExtra(EXTRA_ALERT_TYPE) ?: "ENTRY"
 
+        val app = applicationContext as PrayerTrackerApp
+
         setContent {
+            val settings by app.settingsRepository.settingsFlow.collectAsState(initial = com.prayertracker.app.core.datastore.AppSettings())
             PrayerTrackerTheme {
                 OverlayModalContent(
                     prayerName = prayerName,
                     timeFormatted = timeFormatted,
                     alertType = alertType,
+                    otwIntervalMinutes = settings.otwIntervalMinutes,
+                    noSnoozeIntervalMinutes = settings.noSnoozeIntervalMinutes,
                     onYes = { handleYes(prayerId, notificationId) },
                     onOtw = { handleOtw(prayerId, prayerName, notificationId) },
                     onNo = { handleNo(prayerId, prayerName, notificationId) }
@@ -152,8 +177,13 @@ class PrayerAlarmDialogActivity : ComponentActivity() {
         app.notificationHelper.cancelNotification(notificationId)
 
         if (prayerId.startsWith("test_")) {
-            Toast.makeText(this, "Uji Coba: Ditandai OTW (Pengingat 10 Menit)", Toast.LENGTH_SHORT).show()
-            finish()
+            lifecycleScope.launch(Dispatchers.IO) {
+                val settings = app.settingsRepository.settingsFlow.first()
+                launch(Dispatchers.Main) {
+                    Toast.makeText(this@PrayerAlarmDialogActivity, "Uji Coba: Ditandai OTW (Pengingat ${settings.otwIntervalMinutes} Menit)", Toast.LENGTH_SHORT).show()
+                    finish()
+                }
+            }
             return
         }
 
@@ -178,8 +208,13 @@ class PrayerAlarmDialogActivity : ComponentActivity() {
         app.notificationHelper.cancelNotification(notificationId)
 
         if (prayerId.startsWith("test_")) {
-            Toast.makeText(this, "Uji Coba: Ditandai SNOOZE (Pengingat Nanti)", Toast.LENGTH_SHORT).show()
-            finish()
+            lifecycleScope.launch(Dispatchers.IO) {
+                val settings = app.settingsRepository.settingsFlow.first()
+                launch(Dispatchers.Main) {
+                    Toast.makeText(this@PrayerAlarmDialogActivity, "Uji Coba: Ditandai BELUM (Pengingat ${settings.noSnoozeIntervalMinutes} Menit)", Toast.LENGTH_SHORT).show()
+                    finish()
+                }
+            }
             return
         }
 
@@ -198,6 +233,13 @@ class PrayerAlarmDialogActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try {
+            unregisterReceiver(dismissReceiver)
+        } catch (_: Exception) {}
+    }
 }
 
 @Composable
@@ -205,6 +247,8 @@ fun OverlayModalContent(
     prayerName: String,
     timeFormatted: String,
     alertType: String,
+    otwIntervalMinutes: Int = 3,
+    noSnoozeIntervalMinutes: Int = 10,
     onYes: () -> Unit,
     onOtw: () -> Unit,
     onNo: () -> Unit
@@ -399,7 +443,8 @@ fun OverlayModalContent(
                         ) {
                             Icon(Icons.Default.DirectionsWalk, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("OTW / SIAP-SIAP (10 Mnt)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            val otwLabel = if (alertType == "OTW") "MASIH OTW ($otwIntervalMinutes Mnt)" else "OTW / SIAP-SIAP ($otwIntervalMinutes Mnt)"
+                            Text(otwLabel, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
 
                         // Tombol 3: BELUM / SNOOZE
@@ -414,7 +459,7 @@ fun OverlayModalContent(
                         ) {
                             Icon(Icons.Default.Snooze, contentDescription = null, modifier = Modifier.size(16.dp), tint = TextSecondary)
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("BELUM (Ingatkan Nanti)", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            Text("BELUM / TUNDA ($noSnoozeIntervalMinutes Mnt)", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                         }
                     }
                 }

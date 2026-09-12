@@ -24,6 +24,8 @@ class LocalBackupManager(private val database: AppDatabase) {
 
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
         .withZone(ZoneId.systemDefault())
+    private val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+        .withZone(ZoneId.systemDefault())
 
     companion object {
         private const val EARLY_WINDOW_MS = 30 * 60 * 1000L  // 30 menit
@@ -42,10 +44,14 @@ class LocalBackupManager(private val database: AppDatabase) {
         return when (status) {
             PrayerStatus.COMPLETED -> {
                 val doneAt = completedAtEpoch ?: scheduledTimeEpoch
+                var effEnd = endTimeEpoch
+                if (effEnd > 0 && scheduledTimeEpoch > 0 && effEnd <= scheduledTimeEpoch) {
+                    effEnd += 24 * 60 * 60 * 1000L
+                }
                 when {
                     doneAt <= scheduledTimeEpoch + EARLY_WINDOW_MS -> "Tepat Waktu (Awal Waktu)"
-                    doneAt <= endTimeEpoch - LATE_WINDOW_MS -> "Tepat Waktu"
-                    doneAt <= endTimeEpoch -> "Tepat Waktu (Akhir Waktu)"
+                    doneAt <= effEnd - LATE_WINDOW_MS -> "Tepat Waktu"
+                    doneAt <= effEnd -> "Tepat Waktu (Akhir Waktu)"
                     else -> "Qadha Selesai"
                 }
             }
@@ -59,6 +65,16 @@ class LocalBackupManager(private val database: AppDatabase) {
         if (epoch == null || epoch <= 0) return "-"
         return try {
             timeFormatter.format(Instant.ofEpochMilli(epoch))
+        } catch (_: Exception) {
+            "-"
+        }
+    }
+
+    /** Format epoch ke yyyy-MM-dd HH:mm untuk Jam Selesai — menghindari ambiguitas tengah malam */
+    private fun formatEpochWithDate(epoch: Long?): String {
+        if (epoch == null || epoch <= 0) return "-"
+        return try {
+            dateTimeFormatter.format(Instant.ofEpochMilli(epoch))
         } catch (_: Exception) {
             "-"
         }
@@ -137,7 +153,7 @@ class LocalBackupManager(private val database: AppDatabase) {
                 prayers.forEachIndexed { idx, p ->
                     val isDone = p.status == PrayerStatus.COMPLETED || p.status == PrayerStatus.QADHA_COMPLETED
                     val statusIbadah = if (isDone) "Sudah" else "Belum"
-                    val jamSelesai = if (isDone) formatEpoch(p.completedAtEpoch ?: p.scheduledTimeEpoch) else "-"
+                    val jamSelesai = if (isDone) formatEpochWithDate(p.completedAtEpoch ?: p.scheduledTimeEpoch) else "-"
                     val keterangan = resolveKeterangan(
                         status = p.status,
                         completedAtEpoch = p.completedAtEpoch,

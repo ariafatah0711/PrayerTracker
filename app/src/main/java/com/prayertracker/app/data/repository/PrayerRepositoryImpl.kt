@@ -217,8 +217,28 @@ class PrayerRepositoryImpl(
     }
 
     override suspend fun reconcileMissedPrayers(installedAtEpoch: Long): Int {
+        val now = System.currentTimeMillis()
+        // Auto-repair data anomali (misal salat Isya yang batas akhirnya lebih kecil dari jam masuk karena lewat tengah malam)
+        try {
+            val allPrayers = prayerDao.getAllPrayers()
+            allPrayers.forEach { p ->
+                if (p.scheduledTimeEpoch > 0 && p.endTimeEpoch > 0 && p.endTimeEpoch <= p.scheduledTimeEpoch) {
+                    val fixedEnd = p.endTimeEpoch + 86400000L
+                    val fixedStatus = if (p.status == PrayerStatus.MISSED && now < fixedEnd) {
+                        PrayerStatus.PENDING
+                    } else {
+                        p.status
+                    }
+                    if (fixedStatus == PrayerStatus.PENDING) {
+                        qadhaDao.deleteByPrayerRecordId(p.id)
+                    }
+                    prayerDao.update(p.copy(endTimeEpoch = fixedEnd, status = fixedStatus))
+                }
+            }
+        } catch (_: Exception) {}
+
         return prayerDao.reconcileMissedPrayers(
-            currentTimeEpoch = System.currentTimeMillis(),
+            currentTimeEpoch = now,
             installedAtEpoch = installedAtEpoch
         )
     }

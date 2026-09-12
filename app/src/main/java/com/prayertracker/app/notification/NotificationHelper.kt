@@ -62,7 +62,9 @@ class NotificationHelper(private val context: Context) {
         prayerId: String,
         prayerName: String,
         timeFormatted: String,
-        notificationId: Int
+        notificationId: Int,
+        otwMinutes: Int = 3,
+        noSnoozeMinutes: Int = 10
     ) {
         val dialogIntent = com.prayertracker.app.ui.overlay.PrayerAlarmDialogActivity.createIntent(
             context = context,
@@ -133,9 +135,9 @@ class NotificationHelper(private val context: Context) {
             .setAutoCancel(false)
             .setOngoing(true)
             .setContentIntent(openAppPendingIntent)
-            .addAction(android.R.drawable.checkbox_on_background, "YES", yesPendingIntent)
-            .addAction(android.R.drawable.ic_delete, "NO", noPendingIntent)
-            .addAction(android.R.drawable.ic_media_play, "OTW", otwPendingIntent)
+            .addAction(android.R.drawable.checkbox_on_background, "SUDAH", yesPendingIntent)
+            .addAction(android.R.drawable.ic_delete, "BELUM (${noSnoozeMinutes}m)", noPendingIntent)
+            .addAction(android.R.drawable.ic_media_play, "OTW (${otwMinutes}m)", otwPendingIntent)
             .build()
 
         try {
@@ -155,7 +157,8 @@ class NotificationHelper(private val context: Context) {
     fun showOtwFollowUpNotification(
         prayerId: String,
         prayerName: String,
-        notificationId: Int
+        notificationId: Int,
+        noSnoozeMinutes: Int = 10
     ) {
         val dialogIntent = com.prayertracker.app.ui.overlay.PrayerAlarmDialogActivity.createIntent(
             context = context,
@@ -209,8 +212,8 @@ class NotificationHelper(private val context: Context) {
             .setAutoCancel(false)
             .setOngoing(true)
             .setContentIntent(openAppPendingIntent)
-            .addAction(android.R.drawable.checkbox_on_background, "YES", yesPendingIntent)
-            .addAction(android.R.drawable.ic_delete, "BELUM", belumPendingIntent)
+            .addAction(android.R.drawable.checkbox_on_background, "SUDAH", yesPendingIntent)
+            .addAction(android.R.drawable.ic_delete, "BELUM (${noSnoozeMinutes}m)", belumPendingIntent)
             .build()
 
         try {
@@ -221,13 +224,17 @@ class NotificationHelper(private val context: Context) {
     fun showSnoozeReminderNotification(
         prayerId: String,
         prayerName: String,
-        notificationId: Int
+        notificationId: Int,
+        otwMinutes: Int = 3,
+        noSnoozeMinutes: Int = 10
     ) {
         showPrayerIncomingNotification(
             prayerId = prayerId,
             prayerName = prayerName,
             timeFormatted = "Pengingat",
-            notificationId = notificationId
+            notificationId = notificationId,
+            otwMinutes = otwMinutes,
+            noSnoozeMinutes = noSnoozeMinutes
         )
     }
 

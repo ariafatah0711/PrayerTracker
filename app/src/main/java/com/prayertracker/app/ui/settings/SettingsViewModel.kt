@@ -92,8 +92,18 @@ class SettingsViewModel(
     val showTrashCloudConfirmDialog: StateFlow<Boolean> = _showTrashCloudConfirmDialog.asStateFlow()
 
     fun triggerTestNotification() {
-        notificationHelper.triggerTestNotification()
-        _syncMessage.value = "Notifikasi Heads-Up banner berhasil dikirim!"
+        viewModelScope.launch {
+            val s = settingsRepository.settingsFlow.first()
+            notificationHelper.showPrayerIncomingNotification(
+                prayerId = "test_preview_id",
+                prayerName = "Dzuhur (Uji Coba)",
+                timeFormatted = "Sekarang",
+                notificationId = 9999,
+                otwMinutes = s.otwIntervalMinutes,
+                noSnoozeMinutes = s.noSnoozeIntervalMinutes
+            )
+            _syncMessage.value = "Notifikasi Heads-Up banner berhasil dikirim!"
+        }
     }
 
     fun resetAllData(onSuccess: () -> Unit) {
@@ -320,13 +330,16 @@ class SettingsViewModel(
     fun triggerDelayedOverlayTest(context: Context) {
         viewModelScope.launch {
             kotlinx.coroutines.delay(5000)
+            val s = settingsRepository.settingsFlow.first()
             val testNotificationId = 9997
             // Kirim notifikasi status bar bersamaan agar sinkron dengan overlay
             notificationHelper.showPrayerIncomingNotification(
                 prayerId = "test_delayed_preview_id",
                 prayerName = "Maghrib (Uji Melayang)",
                 timeFormatted = "18:05 WIB",
-                notificationId = testNotificationId
+                notificationId = testNotificationId,
+                otwMinutes = s.otwIntervalMinutes,
+                noSnoozeMinutes = s.noSnoozeIntervalMinutes
             )
             val intent = com.prayertracker.app.ui.overlay.PrayerAlarmDialogActivity.createIntent(
                 context = context,

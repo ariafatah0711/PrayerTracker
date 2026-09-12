@@ -63,6 +63,13 @@ class PrayerNotificationReceiver : BroadcastReceiver() {
                         )
                     }
                 }
+
+                // Tutup dialog popup overlay jika saat ini sedang melayang di layar agar 100% sinkron
+                val dismissIntent = Intent(com.prayertracker.app.ui.overlay.PrayerAlarmDialogActivity.ACTION_DISMISS_OVERLAY).apply {
+                    setPackage(context.packageName)
+                    putExtra(com.prayertracker.app.ui.overlay.PrayerAlarmDialogActivity.EXTRA_NOTIFICATION_ID, notificationId)
+                }
+                context.sendBroadcast(dismissIntent)
             } finally {
                 pendingResult.finish()
             }
