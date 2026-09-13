@@ -222,8 +222,12 @@ fun NextPrayerHeroCard(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    val isOngoing = prayer.scheduledEpoch <= System.currentTimeMillis() &&
+                            System.currentTimeMillis() < prayer.endEpoch &&
+                            (prayer.status == PrayerStatus.PENDING || prayer.status == PrayerStatus.OTW)
+
                     Text(
-                        text = "SALAT BERIKUTNYA",
+                        text = if (isOngoing) "SEDANG BERLANGSUNG" else "SALAT BERIKUTNYA",
                         style = MaterialTheme.typography.labelLarge,
                         color = AmberGold,
                         letterSpacing = 1.2.sp

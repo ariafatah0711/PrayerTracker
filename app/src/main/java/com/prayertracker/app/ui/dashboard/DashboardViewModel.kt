@@ -8,6 +8,7 @@ import com.prayertracker.app.core.datastore.AppSettingsRepository
 import com.prayertracker.app.core.model.PrayerStatus
 import com.prayertracker.app.domain.model.PrayerItem
 import com.prayertracker.app.domain.usecase.*
+import com.prayertracker.app.notification.NotificationHelper
 import com.prayertracker.app.scheduler.PrayerAlarmScheduler
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -39,7 +40,8 @@ class DashboardViewModel(
     private val markPrayerMissedUseCase: MarkPrayerMissedUseCase,
     private val reconcileMissedPrayersUseCase: ReconcileMissedPrayersUseCase,
     private val settingsRepository: AppSettingsRepository,
-    private val alarmScheduler: PrayerAlarmScheduler
+    private val alarmScheduler: PrayerAlarmScheduler,
+    private val notificationHelper: NotificationHelper
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(DashboardUiState())
@@ -85,8 +87,16 @@ class DashboardViewModel(
             // Observe live changes from Room DB
             getTodayPrayersUseCase.observeToday(today).collectLatest { prayers ->
                 val next = calculateNextPrayer(prayers)
+                val isOngoing = next != null && next.scheduledEpoch <= System.currentTimeMillis() &&
+                        System.currentTimeMillis() < next.endEpoch &&
+                        (next.status == PrayerStatus.PENDING || next.status == PrayerStatus.OTW)
+
                 val alarmDetail = if (next != null) {
-                    "Alarm ${next.effectiveDisplayName} (${next.formattedScheduledTime}) aktif di sistem Android"
+                    if (isOngoing) {
+                        "Waktu salat ${next.effectiveDisplayName} sedang berlangsung (Batas: ${next.formattedEndTime})"
+                    } else {
+                        "Alarm ${next.effectiveDisplayName} (${next.formattedScheduledTime}) aktif di sistem Android"
+                    }
                 } else {
                     "Semua salat hari ini telah selesai / terlewat"
                 }
@@ -95,7 +105,7 @@ class DashboardViewModel(
                     current.copy(
                         todayPrayers = prayers,
                         nextPrayer = next,
-                        remainingTimeText = formatRemainingTime(next?.scheduledEpoch),
+                        remainingTimeText = formatRemainingTime(next),
                         formattedDate = today.format(dateFormatter),
                         cityName = settings.cityName,
                         isAlarmArmed = next != null,
@@ -152,10 +162,25 @@ class DashboardViewModel(
                 reconcileMissedPrayersUseCase(settings.installedAtEpoch)
 
                 val next = calculateNextPrayer(_uiState.value.todayPrayers)
+                val isOngoing = next != null && next.scheduledEpoch <= System.currentTimeMillis() &&
+                        System.currentTimeMillis() < next.endEpoch &&
+                        (next.status == PrayerStatus.PENDING || next.status == PrayerStatus.OTW)
+
+                val alarmDetail = if (next != null) {
+                    if (isOngoing) {
+                        "Waktu salat ${next.effectiveDisplayName} sedang berlangsung (Batas: ${next.formattedEndTime})"
+                    } else {
+                        "Alarm ${next.effectiveDisplayName} (${next.formattedScheduledTime}) aktif di sistem Android"
+                    }
+                } else {
+                    "Semua salat hari ini telah selesai / terlewat"
+                }
+
                 _uiState.update { current ->
                     current.copy(
                         nextPrayer = next,
-                        remainingTimeText = formatRemainingTime(next?.scheduledEpoch)
+                        remainingTimeText = formatRemainingTime(next),
+                        activeAlarmDetail = alarmDetail
                     )
                 }
             }
@@ -164,27 +189,47 @@ class DashboardViewModel(
 
     private fun calculateNextPrayer(prayers: List<PrayerItem>): PrayerItem? {
         val now = System.currentTimeMillis()
+        val ongoing = prayers.firstOrNull {
+            it.scheduledEpoch <= now && now < it.endEpoch &&
+            (it.status == PrayerStatus.PENDING || it.status == PrayerStatus.OTW)
+        }
+        if (ongoing != null) return ongoing
         return prayers.firstOrNull { it.scheduledEpoch > now }
             ?: prayers.firstOrNull { it.status == PrayerStatus.PENDING || it.status == PrayerStatus.OTW }
     }
 
-    private fun formatRemainingTime(targetEpoch: Long?): String {
-        if (targetEpoch == null) return ""
-        val diffMillis = targetEpoch - System.currentTimeMillis()
-        if (diffMillis <= 0) return "Waktu salat telah masuk"
+    private fun formatRemainingTime(prayer: PrayerItem?): String {
+        if (prayer == null) return ""
+        val now = System.currentTimeMillis()
+        val isOngoing = prayer.scheduledEpoch <= now && now < prayer.endEpoch &&
+                (prayer.status == PrayerStatus.PENDING || prayer.status == PrayerStatus.OTW)
+
+        val targetEpoch = if (isOngoing) prayer.endEpoch else prayer.scheduledEpoch
+        val diffMillis = targetEpoch - now
+        if (diffMillis <= 0) {
+            return if (isOngoing) "Waktu salat segera berakhir" else "Waktu salat telah masuk"
+        }
 
         val minutes = (diffMillis / (1000 * 60)) % 60
         val hours = (diffMillis / (1000 * 60 * 60))
-        return if (hours > 0) {
+        val durationStr = if (hours > 0) {
             "$hours jam $minutes menit lagi"
         } else {
             "$minutes menit lagi"
         }
+
+        return if (isOngoing) "Batas $durationStr" else durationStr
     }
 
     fun onYesClicked(prayerId: String) {
         viewModelScope.launch(Dispatchers.IO) {
             confirmPrayerUseCase(prayerId)
+            val prayer = _uiState.value.todayPrayers.find { it.id == prayerId }
+            if (prayer != null) {
+                val baseId = PrayerAlarmScheduler.getNotificationId(prayer.prayerName.order)
+                notificationHelper.cancelNotification(baseId)
+                alarmScheduler.cancelAllAlarmsForPrayer(baseId)
+            }
         }
     }
 
@@ -194,11 +239,18 @@ class DashboardViewModel(
             val settings = settingsRepository.settingsFlow.first()
             val prayer = _uiState.value.todayPrayers.find { it.id == prayerId }
             if (prayer != null) {
+                val baseId = PrayerAlarmScheduler.getNotificationId(prayer.prayerName.order)
+                notificationHelper.showStandbyNotification(
+                    prayerName = prayer.effectiveDisplayName,
+                    notificationId = baseId,
+                    delayMinutes = settings.noSnoozeIntervalMinutes,
+                    isOtw = false
+                )
                 alarmScheduler.scheduleNoSnooze(
                     prayerId = prayerId,
                     prayerName = prayer.effectiveDisplayName,
                     delayMinutes = settings.noSnoozeIntervalMinutes,
-                    notificationId = 3000 + prayer.prayerName.order
+                    notificationId = baseId
                 )
             }
         }
@@ -210,11 +262,18 @@ class DashboardViewModel(
             val settings = settingsRepository.settingsFlow.first()
             val prayer = _uiState.value.todayPrayers.find { it.id == prayerId }
             if (prayer != null) {
+                val baseId = PrayerAlarmScheduler.getNotificationId(prayer.prayerName.order)
+                notificationHelper.showStandbyNotification(
+                    prayerName = prayer.effectiveDisplayName,
+                    notificationId = baseId,
+                    delayMinutes = settings.otwIntervalMinutes,
+                    isOtw = true
+                )
                 alarmScheduler.scheduleOtwFollowUp(
                     prayerId = prayerId,
                     prayerName = prayer.effectiveDisplayName,
                     delayMinutes = settings.otwIntervalMinutes,
-                    notificationId = 4000 + prayer.prayerName.order
+                    notificationId = baseId
                 )
             }
         }
@@ -228,7 +287,8 @@ class DashboardViewModel(
         private val markPrayerMissedUseCase: MarkPrayerMissedUseCase,
         private val reconcileMissedPrayersUseCase: ReconcileMissedPrayersUseCase,
         private val settingsRepository: AppSettingsRepository,
-        private val alarmScheduler: PrayerAlarmScheduler
+        private val alarmScheduler: PrayerAlarmScheduler,
+        private val notificationHelper: NotificationHelper
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -240,7 +300,8 @@ class DashboardViewModel(
                 markPrayerMissedUseCase,
                 reconcileMissedPrayersUseCase,
                 settingsRepository,
-                alarmScheduler
+                alarmScheduler,
+                notificationHelper
             ) as T
         }
     }

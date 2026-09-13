@@ -228,14 +228,130 @@ class NotificationHelper(private val context: Context) {
         otwMinutes: Int = 3,
         noSnoozeMinutes: Int = 10
     ) {
-        showPrayerIncomingNotification(
+        val dialogIntent = com.prayertracker.app.ui.overlay.PrayerAlarmDialogActivity.createIntent(
+            context = context,
             prayerId = prayerId,
             prayerName = prayerName,
             timeFormatted = "Pengingat",
             notificationId = notificationId,
-            otwMinutes = otwMinutes,
-            noSnoozeMinutes = noSnoozeMinutes
+            alertType = "SNOOZE"
         )
+        val openAppPendingIntent = PendingIntent.getActivity(
+            context,
+            notificationId,
+            dialogIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val yesIntent = Intent(context, PrayerNotificationReceiver::class.java).apply {
+            action = ACTION_PRAYER_YES
+            putExtra(EXTRA_PRAYER_ID, prayerId)
+            putExtra(EXTRA_PRAYER_NAME, prayerName)
+            putExtra(EXTRA_NOTIFICATION_ID, notificationId)
+        }
+        val yesPendingIntent = PendingIntent.getBroadcast(
+            context,
+            notificationId * 10 + 1,
+            yesIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val noIntent = Intent(context, PrayerNotificationReceiver::class.java).apply {
+            action = ACTION_PRAYER_NO
+            putExtra(EXTRA_PRAYER_ID, prayerId)
+            putExtra(EXTRA_PRAYER_NAME, prayerName)
+            putExtra(EXTRA_NOTIFICATION_ID, notificationId)
+        }
+        val noPendingIntent = PendingIntent.getBroadcast(
+            context,
+            notificationId * 10 + 2,
+            noIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val otwIntent = Intent(context, PrayerNotificationReceiver::class.java).apply {
+            action = ACTION_PRAYER_OTW
+            putExtra(EXTRA_PRAYER_ID, prayerId)
+            putExtra(EXTRA_PRAYER_NAME, prayerName)
+            putExtra(EXTRA_NOTIFICATION_ID, notificationId)
+        }
+        val otwPendingIntent = PendingIntent.getBroadcast(
+            context,
+            notificationId * 10 + 3,
+            otwIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_PRAYER_ALARM)
+            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setContentTitle("Pengingat Salat $prayerName")
+            .setContentText("Waktu salat $prayerName masih berlangsung. Sudah salat?")
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setVibrate(longArrayOf(0, 500, 200, 500))
+            .setFullScreenIntent(openAppPendingIntent, true)
+            .setAutoCancel(false)
+            .setOngoing(true)
+            .setContentIntent(openAppPendingIntent)
+            .addAction(android.R.drawable.checkbox_on_background, "SUDAH", yesPendingIntent)
+            .addAction(android.R.drawable.ic_delete, "BELUM (${noSnoozeMinutes}m)", noPendingIntent)
+            .addAction(android.R.drawable.ic_media_play, "OTW (${otwMinutes}m)", otwPendingIntent)
+            .build()
+
+        try {
+            NotificationManagerCompat.from(context).notify(notificationId, notification)
+        } catch (_: SecurityException) {}
+    }
+
+    fun showStandbyNotification(
+        prayerName: String,
+        notificationId: Int,
+        delayMinutes: Int,
+        isOtw: Boolean = false,
+        prayerId: String = ""
+    ) {
+        val openAppIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val openAppPendingIntent = PendingIntent.getActivity(
+            context,
+            notificationId,
+            openAppIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val statusText = if (isOtw) "OTW Salat" else "Ditunda"
+        val builder = NotificationCompat.Builder(context, CHANNEL_PRAYER_REMINDER)
+            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setContentTitle("$prayerName — $statusText")
+            .setContentText("Pengingat berbunyi lagi dalam $delayMinutes menit")
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setAutoCancel(false)
+            .setOngoing(true)
+            .setContentIntent(openAppPendingIntent)
+            .setSilent(true)
+
+        if (prayerId.isNotBlank()) {
+            val yesIntent = Intent(context, PrayerNotificationReceiver::class.java).apply {
+                action = ACTION_PRAYER_YES
+                putExtra(EXTRA_PRAYER_ID, prayerId)
+                putExtra(EXTRA_PRAYER_NAME, prayerName)
+                putExtra(EXTRA_NOTIFICATION_ID, notificationId)
+            }
+            val yesPendingIntent = PendingIntent.getBroadcast(
+                context,
+                notificationId * 10 + 1,
+                yesIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            builder.addAction(android.R.drawable.checkbox_on_background, "SUDAH", yesPendingIntent)
+        }
+
+        try {
+            NotificationManagerCompat.from(context).notify(notificationId, builder.build())
+        } catch (_: SecurityException) {}
     }
 
     fun cancelNotification(notificationId: Int) {

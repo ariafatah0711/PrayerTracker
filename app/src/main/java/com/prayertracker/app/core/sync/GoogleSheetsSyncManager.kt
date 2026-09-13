@@ -18,8 +18,9 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import com.prayertracker.app.core.datastore.AppSettingsRepository
+import com.prayertracker.app.core.util.PrayerDateTimeUtils
+import com.prayertracker.app.core.util.PrayerStatusResolver
 import kotlinx.coroutines.flow.first
-import java.util.Locale
 
 class GoogleSheetsSyncManager(
     private val database: AppDatabase,
@@ -28,102 +29,27 @@ class GoogleSheetsSyncManager(
 ) {
     private val httpClient = OkHttpClient()
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
-    private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
-    private val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
-
     private val SPREADSHEET_TITLE = "Prayer Tracker - Catatan Ibadah"
     private val SHEETS_API_BASE = "https://sheets.googleapis.com/v4/spreadsheets"
     private val DRIVE_FILES_BASE = "https://www.googleapis.com/drive/v3/files"
 
     /** Format epoch ke HH:mm untuk kolom Jadwal Masuk & Batas Akhir */
-    private fun formatEpoch(epoch: Long?): String {
-        if (epoch == null || epoch <= 0) return "-"
-        return try {
-            Instant.ofEpochMilli(epoch)
-                .atZone(ZoneId.systemDefault())
-                .format(timeFormatter)
-        } catch (_: Exception) {
-            "-"
-        }
-    }
+    private fun formatEpoch(epoch: Long?): String = PrayerDateTimeUtils.formatEpoch(epoch)
 
     /** Format epoch ke yyyy-MM-dd HH:mm untuk kolom Jam Selesai — menghindari ambiguitas tengah malam */
-    private fun formatEpochWithDate(epoch: Long?): String {
-        if (epoch == null || epoch <= 0) return "-"
-        return try {
-            Instant.ofEpochMilli(epoch)
-                .atZone(ZoneId.systemDefault())
-                .format(dateTimeFormatter)
-        } catch (_: Exception) {
-            "-"
-        }
-    }
+    private fun formatEpochWithDate(epoch: Long?): String = PrayerDateTimeUtils.formatEpochWithDate(epoch)
 
-    /**
-     * Parse nilai kolom Jam Selesai dari sheet menjadi epoch milli.
-     * Mendukung dua format:
-     *   - Format baru: "yyyy-MM-dd HH:mm"  → epoch langsung tanpa ambiguitas
-     *   - Format lama: "HH:mm"              → epoch gabung dengan rDate; jika hasilnya lebih kecil dari schedEpoch, tambahkan 24 jam
-     */
-    private fun parseJamSelesaiToEpoch(jamSelesaiStr: String, rDate: String, schedEpoch: Long): Long {
-        if (jamSelesaiStr.isBlank() || jamSelesaiStr == "-") return 0L
-        val clean = jamSelesaiStr.replace("WIB", "").replace("WITA", "").replace("WIT", "")
-            .replace("(Qadha)", "").trim()
-        // Format baru: yyyy-MM-dd HH:mm
-        if (clean.matches(Regex("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}"))) {
-            return try {
-                val ldt = java.time.LocalDateTime.parse(clean, dateTimeFormatter)
-                ldt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
-            } catch (_: Exception) { 0L }
-        }
-        // Format lama: HH:mm
-        val parsed = parseTimeToEpoch(rDate, clean)
-        if (parsed <= 0L) return 0L
-        // Jika jam selesai lebih kecil dari jam masuk, tandanya melewati tengah malam → +1 hari
-        return if (schedEpoch > 0 && parsed < schedEpoch) parsed + 86400000L else parsed
-    }
+    /** Parse nilai kolom Jam Selesai dari sheet menjadi epoch milli secara cerdas dan akurat */
+    private fun parseJamSelesaiToEpoch(jamSelesaiStr: String, rDate: String, schedEpoch: Long): Long =
+        PrayerDateTimeUtils.parseDateTimeToEpoch(jamSelesaiStr, rDate, schedEpoch)
 
-    /**
-     * Menentukan keterangan berdasarkan jam selesai relatif terhadap jadwal masuk dan batas akhir.
-     *
-     * - completedAt <= scheduledTime + 30 menit  â†’ "Tepat Waktu (Awal Waktu)"
-     * - completedAt <= endTime - 15 menit        â†’ "Tepat Waktu"
-     * - completedAt <= endTime                   â†’ "Tepat Waktu (Akhir Waktu)"
-     * - completedAt > endTime                    â†’ "Qadha Selesai"
-     * - MISSED                                   â†’ "Terlewat (Belum Qadha)"
-     * - else                                     â†’ "Belum Salat"
-     */
-    companion object {
-        private const val EARLY_WINDOW_MS = 30 * 60 * 1000L  // 30 menit
-        private const val LATE_WINDOW_MS  = 15 * 60 * 1000L  // 15 menit
-    }
-
+    /** Menentukan keterangan status salat secara konsisten */
     fun resolveKeterangan(
         status: PrayerStatus,
         completedAtEpoch: Long?,
         scheduledTimeEpoch: Long,
         endTimeEpoch: Long
-    ): String {
-        return when (status) {
-            PrayerStatus.COMPLETED -> {
-                val doneAt = completedAtEpoch ?: scheduledTimeEpoch
-                var effEnd = endTimeEpoch
-                // Jika batas akhir lebih kecil dari jadwal mulai (kasus Isya yang berakhir subuh besoknya)
-                if (effEnd > 0 && scheduledTimeEpoch > 0 && effEnd <= scheduledTimeEpoch) {
-                    effEnd += 24 * 60 * 60 * 1000L
-                }
-                when {
-                    doneAt <= scheduledTimeEpoch + EARLY_WINDOW_MS -> "Tepat Waktu (Awal Waktu)"
-                    doneAt <= effEnd - LATE_WINDOW_MS -> "Tepat Waktu"
-                    doneAt <= effEnd -> "Tepat Waktu (Akhir Waktu)"
-                    else -> "Qadha Selesai" // selesai tapi melewati batas akhir
-                }
-            }
-            PrayerStatus.QADHA_COMPLETED -> "Qadha Selesai"
-            PrayerStatus.MISSED -> "Terlewat (Belum Qadha)"
-            else -> "Belum Salat"
-        }
-    }
+    ): String = PrayerStatusResolver.resolveKeterangan(status, completedAtEpoch, scheduledTimeEpoch, endTimeEpoch)
 
     /**
      * Tarik data HANYA dari Google Sheets ke database lokal (Cloud -> HP).
@@ -371,13 +297,20 @@ class GoogleSheetsSyncManager(
 
                                 val nowEpoch = System.currentTimeMillis()
                                 if (isRingkasanDone) {
+                                    val statusToSet = if (localPrayer.status == PrayerStatus.QADHA_COMPLETED) {
+                                        PrayerStatus.QADHA_COMPLETED
+                                    } else {
+                                        PrayerStatus.COMPLETED
+                                    }
                                     database.prayerRecordDao().updateStatus(
                                         id = localPrayer.id,
-                                        status = PrayerStatus.COMPLETED,
+                                        status = statusToSet,
                                         completedAt = localPrayer.completedAtEpoch ?: nowEpoch,
                                         syncStatus = SyncStatus.SYNCED
                                     )
-                                    database.qadhaRecordDao().deleteByPrayerRecordId(localPrayer.id)
+                                    if (statusToSet == PrayerStatus.COMPLETED) {
+                                        database.qadhaRecordDao().deleteByPrayerRecordId(localPrayer.id)
+                                    }
                                 } else if (cellValue.equals("Belum", ignoreCase = true) || cellValue.equals("Terlewat", ignoreCase = true)) {
                                     var effEnd = localPrayer.endTimeEpoch
                                     if (effEnd > 0 && localPrayer.scheduledTimeEpoch > 0 && effEnd <= localPrayer.scheduledTimeEpoch) {
@@ -658,12 +591,8 @@ class GoogleSheetsSyncManager(
                     endTimeEpoch = p.endTimeEpoch
                 )
 
-                // Formula dinamis:
-                // Status Ibadah (Kolom G): Jika Jam Selesai kosong atau "-", otomatis "Belum", jika ada isinya otomatis "Sudah"
-                val statusFormula = "=IF(OR(${s}F$r=\"\"$sep ${s}F$r=\"-\")$sep \"Belum\"$sep \"Sudah\")"
-
-                // Keterangan (Kolom H): Dinamis mengikuti Jam Selesai
-                val keteranganFormula = "=IF(OR(${s}F$r=\"\"$sep ${s}F$r=\"-\")$sep \"Belum Salat\"$sep \"$keterangan\")"
+                val statusFormula = PrayerStatusResolver.buildGoogleSheetsStatusFormula(r, sep, s)
+                val keteranganFormula = PrayerStatusResolver.buildGoogleSheetsKeteranganFormula(r, sep, s)
 
                 val row = JSONArray().apply {
                     put(p.id)
@@ -1442,71 +1371,11 @@ class GoogleSheetsSyncManager(
         }
     }
 
-    private fun parseTimeToEpoch(dateStr: String, timeStr: String): Long {
-        return try {
-            val clean = timeStr.replace("WIB", "").replace("WITA", "").replace("WIT", "")
-                .replace("(Qadha)", "").trim()
-            val parts = clean.split(":")
-            if (parts.size >= 2) {
-                val h = parts[0].trim().toInt()
-                val m = parts[1].trim().toInt()
-                val pDate = LocalDate.parse(normalizeSheetDate(dateStr))
-                pDate.atTime(h, m).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
-            } else {
-                0L
-            }
-        } catch (_: Exception) {
-            0L
-        }
-    }
+    private fun parseTimeToEpoch(dateStr: String, timeStr: String): Long =
+        PrayerDateTimeUtils.parseTimeToEpoch(dateStr, timeStr)
 
-    /**
-     * Menormalisasi tanggal dari Google Sheets ke format "yyyy-MM-dd" yang digunakan oleh database lokal.
-     * Google Sheets bisa mengembalikan tanggal dalam beberapa format tergantung locale:
-     * - "2026-09-11" (ISO, sudah benar)
-     * - "11 September 2026" (format locale id_ID)
-     * - "September 11, 2026" (format locale en_US)
-     * - Angka serial Sheets (misalnya 46348)
-     */
-    private fun normalizeSheetDate(raw: String): String {
-        val trimmed = raw.trim()
-        if (trimmed.isBlank()) return ""
-
-        // Sudah format ISO yyyy-MM-dd?
-        if (trimmed.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))) return trimmed
-
-        // Coba parse "d MMMM yyyy" (locale Indonesia)
-        try {
-            val idFormatter = DateTimeFormatter.ofPattern("d MMMM yyyy", Locale("id", "ID"))
-            val parsed = LocalDate.parse(trimmed, idFormatter)
-            return parsed.toString() // yyyy-MM-dd
-        } catch (_: Exception) { }
-
-        // Coba parse "MMMM d, yyyy" (locale English)
-        try {
-            val enFormatter = DateTimeFormatter.ofPattern("MMMM d, yyyy", Locale.ENGLISH)
-            val parsed = LocalDate.parse(trimmed, enFormatter)
-            return parsed.toString()
-        } catch (_: Exception) { }
-
-        // Coba parse "d/M/yyyy" atau "M/d/yyyy"
-        try {
-            val slashFormatter = DateTimeFormatter.ofPattern("d/M/yyyy")
-            val parsed = LocalDate.parse(trimmed, slashFormatter)
-            return parsed.toString()
-        } catch (_: Exception) { }
-
-        // Angka serial Google Sheets (hari sejak 30 Desember 1899)
-        try {
-            val serial = trimmed.toDouble().toLong()
-            if (serial in 1..100000) {
-                val baseDate = LocalDate.of(1899, 12, 30)
-                return baseDate.plusDays(serial).toString()
-            }
-        } catch (_: Exception) { }
-
-        return trimmed // Kembalikan apa adanya sebagai fallback
-    }
+    private fun normalizeSheetDate(raw: String): String =
+        PrayerDateTimeUtils.normalizeSheetDate(raw)
 
     suspend fun trashSpreadsheet(): Result<Unit> = withContext(Dispatchers.IO) {
         val token = authManager.getAccessToken()

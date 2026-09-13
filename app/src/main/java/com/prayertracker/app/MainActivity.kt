@@ -71,7 +71,8 @@ class MainActivity : ComponentActivity() {
                         app.markPrayerMissedUseCase,
                         app.reconcileMissedPrayersUseCase,
                         app.settingsRepository,
-                        app.alarmScheduler
+                        app.alarmScheduler,
+                        app.notificationHelper
                     )
                 )
 

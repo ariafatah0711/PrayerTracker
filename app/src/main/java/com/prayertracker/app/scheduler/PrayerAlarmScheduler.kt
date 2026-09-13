@@ -18,6 +18,14 @@ class PrayerAlarmScheduler(private val context: Context) {
         const val EXTRA_PRAYER_ID = "extra_prayer_id"
         const val EXTRA_PRAYER_NAME = "extra_prayer_name"
         const val EXTRA_NOTIFICATION_ID = "extra_notification_id"
+
+        const val BASE_NOTIFICATION_ID = 1000
+        const val OTW_OFFSET = 1000
+        const val SNOOZE_OFFSET = 2000
+
+        fun getNotificationId(order: Int): Int = BASE_NOTIFICATION_ID + order
+        fun getOtwRequestCode(notificationId: Int): Int = notificationId + OTW_OFFSET
+        fun getSnoozeRequestCode(notificationId: Int): Int = notificationId + SNOOZE_OFFSET
     }
 
     fun schedulePrayerEntry(
@@ -61,7 +69,7 @@ class PrayerAlarmScheduler(private val context: Context) {
 
         val pendingIntent = PendingIntent.getBroadcast(
             context,
-            notificationId + 1000,
+            getOtwRequestCode(notificationId),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -85,7 +93,7 @@ class PrayerAlarmScheduler(private val context: Context) {
 
         val pendingIntent = PendingIntent.getBroadcast(
             context,
-            notificationId + 2000,
+            getSnoozeRequestCode(notificationId),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -104,6 +112,15 @@ class PrayerAlarmScheduler(private val context: Context) {
         if (pendingIntent != null) {
             alarmManager.cancel(pendingIntent)
         }
+    }
+
+    /**
+     * Membatalkan seluruh jenis alarm (Entry, OTW, dan Snooze) untuk waktu salat tertentu secara bersih.
+     */
+    fun cancelAllAlarmsForPrayer(notificationId: Int) {
+        cancelAlarm(notificationId)
+        cancelAlarm(getOtwRequestCode(notificationId))
+        cancelAlarm(getSnoozeRequestCode(notificationId))
     }
 
     private fun scheduleExact(triggerEpoch: Long, pendingIntent: PendingIntent) {

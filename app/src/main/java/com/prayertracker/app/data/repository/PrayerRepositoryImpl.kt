@@ -15,6 +15,7 @@ import com.prayertracker.app.domain.repository.PrayerRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import com.prayertracker.app.core.util.PrayerDateTimeUtils
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -351,9 +352,5 @@ class PrayerRepositoryImpl(
         )
     }
 
-    private fun formatEpoch(epoch: Long): String {
-        return Instant.ofEpochMilli(epoch)
-            .atZone(ZoneId.systemDefault())
-            .format(timeFormatter)
-    }
+    private fun formatEpoch(epoch: Long): String = PrayerDateTimeUtils.formatEpoch(epoch)
 }

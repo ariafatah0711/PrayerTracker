@@ -30,17 +30,26 @@ class PrayerNotificationReceiver : BroadcastReceiver() {
                 when (intent.action) {
                     NotificationHelper.ACTION_PRAYER_YES -> {
                         // User clicked YES
-                        repository.confirmPrayer(prayerId)
+                        if (!prayerId.startsWith("test_")) {
+                            repository.confirmPrayer(prayerId)
+                        }
                         notificationHelper.cancelNotification(notificationId)
-                        // Cancel any pending snooze / OTW alarms
-                        alarmScheduler.cancelAlarm(notificationId + 1000)
-                        alarmScheduler.cancelAlarm(notificationId + 2000)
+                        alarmScheduler.cancelAllAlarmsForPrayer(notificationId)
                     }
 
                     NotificationHelper.ACTION_PRAYER_NO -> {
                         // User clicked NO / BELUM
-                        repository.processNo(prayerId)
-                        notificationHelper.cancelNotification(notificationId)
+                        if (!prayerId.startsWith("test_")) {
+                            repository.processNo(prayerId)
+                        }
+                        // Replace alarm notification with quiet standby notification
+                        notificationHelper.showStandbyNotification(
+                            prayerName = prayerName,
+                            notificationId = notificationId,
+                            delayMinutes = settings.noSnoozeIntervalMinutes,
+                            isOtw = false,
+                            prayerId = prayerId
+                        )
                         // Schedule Snooze reminder (default 10 minutes)
                         alarmScheduler.scheduleNoSnooze(
                             prayerId = prayerId,
@@ -52,8 +61,17 @@ class PrayerNotificationReceiver : BroadcastReceiver() {
 
                     NotificationHelper.ACTION_PRAYER_OTW -> {
                         // User clicked OTW
-                        repository.processOtw(prayerId)
-                        notificationHelper.cancelNotification(notificationId)
+                        if (!prayerId.startsWith("test_")) {
+                            repository.processOtw(prayerId)
+                        }
+                        // Replace alarm notification with quiet standby notification
+                        notificationHelper.showStandbyNotification(
+                            prayerName = prayerName,
+                            notificationId = notificationId,
+                            delayMinutes = settings.otwIntervalMinutes,
+                            isOtw = true,
+                            prayerId = prayerId
+                        )
                         // Schedule OTW follow-up reminder (default 3 minutes)
                         alarmScheduler.scheduleOtwFollowUp(
                             prayerId = prayerId,

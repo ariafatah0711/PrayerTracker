@@ -9,6 +9,8 @@ import com.prayertracker.app.core.database.entity.PrayerRecordEntity
 import com.prayertracker.app.core.model.PrayerName
 import com.prayertracker.app.core.model.PrayerStatus
 import com.prayertracker.app.core.model.SyncStatus
+import com.prayertracker.app.core.util.PrayerDateTimeUtils
+import com.prayertracker.app.core.util.PrayerStatusResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -16,69 +18,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 
 class LocalBackupManager(private val database: AppDatabase) {
-
-    private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
-        .withZone(ZoneId.systemDefault())
-    private val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
-        .withZone(ZoneId.systemDefault())
-
-    companion object {
-        private const val EARLY_WINDOW_MS = 30 * 60 * 1000L  // 30 menit
-        private const val LATE_WINDOW_MS  = 15 * 60 * 1000L  // 15 menit
-    }
-
-    /**
-     * Menentukan keterangan berdasarkan jam selesai relatif terhadap jadwal masuk dan batas akhir.
-     */
-    private fun resolveKeterangan(
-        status: PrayerStatus,
-        completedAtEpoch: Long?,
-        scheduledTimeEpoch: Long,
-        endTimeEpoch: Long
-    ): String {
-        return when (status) {
-            PrayerStatus.COMPLETED -> {
-                val doneAt = completedAtEpoch ?: scheduledTimeEpoch
-                var effEnd = endTimeEpoch
-                if (effEnd > 0 && scheduledTimeEpoch > 0 && effEnd <= scheduledTimeEpoch) {
-                    effEnd += 24 * 60 * 60 * 1000L
-                }
-                when {
-                    doneAt <= scheduledTimeEpoch + EARLY_WINDOW_MS -> "Tepat Waktu (Awal Waktu)"
-                    doneAt <= effEnd - LATE_WINDOW_MS -> "Tepat Waktu"
-                    doneAt <= effEnd -> "Tepat Waktu (Akhir Waktu)"
-                    else -> "Qadha Selesai"
-                }
-            }
-            PrayerStatus.QADHA_COMPLETED -> "Qadha Selesai"
-            PrayerStatus.MISSED -> "Terlewat (Belum Qadha)"
-            else -> "Belum Salat"
-        }
-    }
-
-    private fun formatEpoch(epoch: Long?): String {
-        if (epoch == null || epoch <= 0) return "-"
-        return try {
-            timeFormatter.format(Instant.ofEpochMilli(epoch))
-        } catch (_: Exception) {
-            "-"
-        }
-    }
-
-    /** Format epoch ke yyyy-MM-dd HH:mm untuk Jam Selesai — menghindari ambiguitas tengah malam */
-    private fun formatEpochWithDate(epoch: Long?): String {
-        if (epoch == null || epoch <= 0) return "-"
-        return try {
-            dateTimeFormatter.format(Instant.ofEpochMilli(epoch))
-        } catch (_: Exception) {
-            "-"
-        }
-    }
 
     /**
      * Ekspor seluruh riwayat salat ke file CSV yang kompatibel 100% dengan
@@ -101,20 +42,11 @@ class LocalBackupManager(private val database: AppDatabase) {
                 val dates = prayers.map { it.prayerDate }.distinct().sortedDescending()
                 val prayersByDate = prayers.groupBy { it.prayerDate }
 
-                fun formatDateNice(dStr: String): String {
-                    return try {
-                        val parsed = java.time.LocalDate.parse(dStr)
-                        parsed.format(java.time.format.DateTimeFormatter.ofPattern("d MMMM yyyy", java.util.Locale("id", "ID")))
-                    } catch (_: Exception) {
-                        dStr
-                    }
-                }
-
                 fun statusText(p: PrayerRecordEntity?): String {
                     if (p == null) return "Belum"
                     val isDone = p.status == PrayerStatus.COMPLETED || p.status == PrayerStatus.QADHA_COMPLETED
                     if (!isDone) return "Belum"
-                    val time = formatEpoch(p.completedAtEpoch ?: p.scheduledTimeEpoch)
+                    val time = PrayerDateTimeUtils.formatEpoch(p.completedAtEpoch ?: p.scheduledTimeEpoch)
                     return if (p.status == PrayerStatus.QADHA_COMPLETED) "Sudah ($time Qadha)" else "Sudah ($time)"
                 }
 
@@ -133,7 +65,7 @@ class LocalBackupManager(private val database: AppDatabase) {
                     val doneCount = listOf(fajr, dhuhr, asr, maghrib, isha).count { isDone(it) }
 
                     val row = listOf(
-                        "\"${formatDateNice(date)}\"",
+                        "\"${PrayerDateTimeUtils.formatDateNice(date)}\"",
                         "\"${statusText(fajr)}\"",
                         "\"${statusText(dhuhr)}\"",
                         "\"${statusText(asr)}\"",
@@ -153,8 +85,8 @@ class LocalBackupManager(private val database: AppDatabase) {
                 prayers.forEachIndexed { idx, p ->
                     val isDone = p.status == PrayerStatus.COMPLETED || p.status == PrayerStatus.QADHA_COMPLETED
                     val statusIbadah = if (isDone) "Sudah" else "Belum"
-                    val jamSelesai = if (isDone) formatEpochWithDate(p.completedAtEpoch ?: p.scheduledTimeEpoch) else "-"
-                    val keterangan = resolveKeterangan(
+                    val jamSelesai = if (isDone) PrayerDateTimeUtils.formatEpochWithDate(p.completedAtEpoch ?: p.scheduledTimeEpoch) else "-"
+                    val keterangan = PrayerStatusResolver.resolveKeterangan(
                         status = p.status,
                         completedAtEpoch = p.completedAtEpoch,
                         scheduledTimeEpoch = p.scheduledTimeEpoch,
@@ -163,10 +95,10 @@ class LocalBackupManager(private val database: AppDatabase) {
 
                     val line = listOf(
                         "${idx + 1}",
-                        "\"${formatDateNice(p.prayerDate)}\"",
+                        "\"${PrayerDateTimeUtils.formatDateNice(p.prayerDate)}\"",
                         p.prayerName.displayName,
-                        formatEpoch(p.scheduledTimeEpoch),
-                        formatEpoch(p.endTimeEpoch),
+                        PrayerDateTimeUtils.formatEpoch(p.scheduledTimeEpoch),
+                        PrayerDateTimeUtils.formatEpoch(p.endTimeEpoch),
                         jamSelesai,
                         statusIbadah,
                         "\"$keterangan\""
