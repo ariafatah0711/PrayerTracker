@@ -2,6 +2,7 @@ package com.prayertracker.app.core.sync
 
 import com.prayertracker.app.core.database.AppDatabase
 import com.prayertracker.app.core.database.entity.PrayerRecordEntity
+import com.prayertracker.app.core.database.entity.QadhaRecordEntity
 import com.prayertracker.app.core.model.PrayerName
 import com.prayertracker.app.core.model.PrayerStatus
 import com.prayertracker.app.core.model.SyncStatus
@@ -195,7 +196,7 @@ class GoogleSheetsSyncManager(
                                 val existingQ = database.qadhaRecordDao().getByPrayerRecordId(targetId)
                                 if (existingQ == null) {
                                     database.qadhaRecordDao().insert(
-                                        com.prayertracker.app.core.database.entity.QadhaRecordEntity(
+                                        QadhaRecordEntity(
                                             id = java.util.UUID.randomUUID().toString(),
                                             prayerRecordId = targetId,
                                             qadhaStatus = PrayerStatus.QADHA_COMPLETED,
@@ -367,7 +368,7 @@ class GoogleSheetsSyncManager(
                 put("Ashar")
                 put("Maghrib")
                 put("Isya")
-                put("Total Selesai")
+                put("Selesai")
             }
             val rekapWaktuHeader = JSONArray().apply {
                 put("Tanggal")
@@ -376,7 +377,7 @@ class GoogleSheetsSyncManager(
                 put("Ashar")
                 put("Maghrib")
                 put("Isya")
-                put("Total Selesai")
+                put("Selesai")
             }
             val rawHeader = JSONArray().apply {
                 put("ID")
@@ -410,7 +411,7 @@ class GoogleSheetsSyncManager(
                     put("")
                     put("")
                 }
-                put("Total Selesai")
+                put("Selesai")
             }
             val h2 = JSONArray().apply {
                 put("")
@@ -477,13 +478,13 @@ class GoogleSheetsSyncManager(
                   normalizedDates$sep ARRAYFORMULA(IF(ISNUMBER(rawDates)$sep rawDates$sep IFERROR(DATEVALUE(rawDates)$sep 0)))$sep
                   uniqueDates$sep SORT(UNIQUE(FILTER(normalizedDates$sep normalizedDates>0))$sep 1$sep FALSE)$sep
                   HSTACK(
-                    uniqueDates$sep
+                    ARRAYFORMULA(TEXT(uniqueDates$sep "d MMMM yyyy"))$sep
                     ARRAYFORMULA(IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Subuh"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep "Sudah"$sep "Belum"))$sep
                     ARRAYFORMULA(IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Dzuhur"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep "Sudah"$sep "Belum"))$sep
                     ARRAYFORMULA(IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Ashar"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep "Sudah"$sep "Belum"))$sep
                     ARRAYFORMULA(IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Maghrib"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep "Sudah"$sep "Belum"))$sep
                     ARRAYFORMULA(IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Isya"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep "Sudah"$sep "Belum"))$sep
-                    ARRAYFORMULA(IF(uniqueDates=""$sep ""$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")&"/5 ("&TEXT(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")/5$sep "0%")&")"))
+                    ARRAYFORMULA(IF(uniqueDates=""$sep ""$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")&"/5"))
                   )
                 )$sep "")
             """.trimIndent().replace("\n", "")
@@ -509,7 +510,7 @@ class GoogleSheetsSyncManager(
                   weekStarts$sep SORT(UNIQUE(FILTER(normalizedDates-WEEKDAY(normalizedDates$sep 2)+1$sep normalizedDates>0))$sep 1$sep FALSE)$sep
                   checks$sep MAKEARRAY(ROWS(weekStarts)$sep 35$sep LAMBDA(rowIndex$sep columnIndex$sep LET(
                     targetDate$sep INDEX(weekStarts$sep rowIndex)+INT((columnIndex-1)/5)$sep
-                    prayerName$sep CHOOSE(MOD(columnIndex-1$sep 5)+1$sep "Subuh"$sep "Dzuhur"$sep "Ashar"$sep "Maghrib"$sep "Isya")$sep
+                    prayerName$sep INDEX({"Subuh"$sep "Dzuhur"$sep "Ashar"$sep "Maghrib"$sep "Isya"}$sep MOD(columnIndex-1$sep 5)+1)$sep
                     IF(targetDate>TODAY()$sep ""$sep IF(OR(
                       COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep targetDate$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep prayerName$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep
                       COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep TEXT(targetDate$sep "yyyy-MM-dd")$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep prayerName$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0
@@ -521,9 +522,9 @@ class GoogleSheetsSyncManager(
                     IF(active=0$sep "-"$sep completed&"/"&active&" ("&TEXT(completed/active$sep "0%")&")")
                   )))$sep
                   HSTACK(
-                    TEXT(weekStarts$sep "mmmm yyyy")$sep
-                    "Minggu "&IFERROR(LET(bulan$sep MONTH(weekStarts)$sep tahun$sep YEAR(weekStarts)$sep tgl1$sep DATE(tahun$sep bulan$sep 1)$sep mingguPertama$sep tgl1 + MOD(7 - WEEKDAY(tgl1$sep 2)$sep 7)$sep mingguKe$sep INT((weekStarts - mingguPertama) / 7) + 2$sep IF(mingguKe < 1$sep 1$sep mingguKe))$sep "Minggu 1")$sep
-                    TEXT(weekStarts$sep "d MMM")&" - "&TEXT(weekStarts+6$sep "d MMM")$sep
+                    ARRAYFORMULA(TEXT(weekStarts$sep "mmmm yyyy"))$sep
+                    ARRAYFORMULA("Minggu "&IFERROR(INT((weekStarts - (DATE(YEAR(weekStarts)$sep MONTH(weekStarts)$sep 1) + MOD(1 - WEEKDAY(DATE(YEAR(weekStarts)$sep MONTH(weekStarts)$sep 1)$sep 2)$sep 7))) / 7) + 1)$sep "1"))$sep
+                    ARRAYFORMULA(TEXT(weekStarts$sep "d MMM")&" - "&TEXT(weekStarts+6$sep "d MMM"))$sep
                     checks$sep totals
                   )
                 )$sep "")
@@ -545,38 +546,38 @@ class GoogleSheetsSyncManager(
                   normalizedDates$sep ARRAYFORMULA(IF(ISNUMBER(rawDates)$sep rawDates$sep IFERROR(DATEVALUE(rawDates)$sep 0)))$sep
                   uniqueDates$sep SORT(UNIQUE(FILTER(normalizedDates$sep normalizedDates>0))$sep 1$sep FALSE)$sep
                   HSTACK(
-                    uniqueDates$sep
+                    ARRAYFORMULA(TEXT(uniqueDates$sep "d MMMM yyyy"))$sep
                     BYROW(uniqueDates$sep LAMBDA(d$sep LET(
                       done$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Subuh"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")$sep
                       tm$sep IF(done=0$sep ""$sep TEXT(INDEX(FILTER('Data Mentah'!${s}F${s}2:${s}F${s}1000$sep ('Data Mentah'!${s}B${s}2:${s}B${s}1000=d)*('Data Mentah'!${s}C${s}2:${s}C${s}1000="Subuh"))$sep 1)$sep "HH:mm"))$sep
                       qd$sep IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Subuh"$sep 'Data Mentah'!${s}H${s}2:${s}H${s}1000$sep "*Qadha*")>0$sep " (Qadha)"$sep "")$sep
-                      IF(done=0$sep "Belum"$sep tm&qd)
+                      IF(done>0$sep tm&qd$sep "Belum")
                     )))$sep
                     BYROW(uniqueDates$sep LAMBDA(d$sep LET(
                       done$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Dzuhur"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")$sep
                       tm$sep IF(done=0$sep ""$sep TEXT(INDEX(FILTER('Data Mentah'!${s}F${s}2:${s}F${s}1000$sep ('Data Mentah'!${s}B${s}2:${s}B${s}1000=d)*('Data Mentah'!${s}C${s}2:${s}C${s}1000="Dzuhur"))$sep 1)$sep "HH:mm"))$sep
                       qd$sep IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Dzuhur"$sep 'Data Mentah'!${s}H${s}2:${s}H${s}1000$sep "*Qadha*")>0$sep " (Qadha)"$sep "")$sep
-                      IF(done=0$sep "Belum"$sep tm&qd)
+                      IF(done>0$sep tm&qd$sep "Belum")
                     )))$sep
                     BYROW(uniqueDates$sep LAMBDA(d$sep LET(
                       done$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Ashar"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")$sep
                       tm$sep IF(done=0$sep ""$sep TEXT(INDEX(FILTER('Data Mentah'!${s}F${s}2:${s}F${s}1000$sep ('Data Mentah'!${s}B${s}2:${s}B${s}1000=d)*('Data Mentah'!${s}C${s}2:${s}C${s}1000="Ashar"))$sep 1)$sep "HH:mm"))$sep
                       qd$sep IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Ashar"$sep 'Data Mentah'!${s}H${s}2:${s}H${s}1000$sep "*Qadha*")>0$sep " (Qadha)"$sep "")$sep
-                      IF(done=0$sep "Belum"$sep tm&qd)
+                      IF(done>0$sep tm&qd$sep "Belum")
                     )))$sep
                     BYROW(uniqueDates$sep LAMBDA(d$sep LET(
                       done$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Maghrib"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")$sep
                       tm$sep IF(done=0$sep ""$sep TEXT(INDEX(FILTER('Data Mentah'!${s}F${s}2:${s}F${s}1000$sep ('Data Mentah'!${s}B${s}2:${s}B${s}1000=d)*('Data Mentah'!${s}C${s}2:${s}C${s}1000="Maghrib"))$sep 1)$sep "HH:mm"))$sep
                       qd$sep IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Maghrib"$sep 'Data Mentah'!${s}H${s}2:${s}H${s}1000$sep "*Qadha*")>0$sep " (Qadha)"$sep "")$sep
-                      IF(done=0$sep "Belum"$sep tm&qd)
+                      IF(done>0$sep tm&qd$sep "Belum")
                     )))$sep
                     BYROW(uniqueDates$sep LAMBDA(d$sep LET(
                       done$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Isya"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")$sep
                       tm$sep IF(done=0$sep ""$sep TEXT(INDEX(FILTER('Data Mentah'!${s}F${s}2:${s}F${s}1000$sep ('Data Mentah'!${s}B${s}2:${s}B${s}1000=d)*('Data Mentah'!${s}C${s}2:${s}C${s}1000="Isya"))$sep 1)$sep "HH:mm"))$sep
                       qd$sep IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Isya"$sep 'Data Mentah'!${s}H${s}2:${s}H${s}1000$sep "*Qadha*")>0$sep " (Qadha)"$sep "")$sep
-                      IF(done=0$sep "Belum"$sep tm&qd)
+                      IF(done>0$sep tm&qd$sep "Belum")
                     )))$sep
-                    ARRAYFORMULA(IF(uniqueDates=""$sep ""$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")&"/5 ("&TEXT(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")/5$sep "0%")&")"))
+                    ARRAYFORMULA(IF(uniqueDates=""$sep ""$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")&"/5"))
                   )
                 )$sep "")
             """.trimIndent().replace("\n", "")
@@ -611,24 +612,17 @@ class GoogleSheetsSyncManager(
 
             // Array formula untuk Kolom G (Status Ibadah) & H (Keterangan)
             // Ditulis terpisah ke G2:H2 setelah data A:F
-            val rawStatusFormula = "=ARRAYFORMULA(IF(F2:F1000=\"\"$sep \"\"$sep IF(F2:F1000=\"-\"$sep \"Belum\"$sep \"Sudah\")))"
-            val rawKeteranganFormula = "=ARRAYFORMULA(BYROW(F2:F1000$sep LAMBDA(f$sep LET(" +
-                "row$sep ROW()-1$sep " +
-                "dRaw$sep INDEX(B2:B1000$sep row)$sep " +
-                "dVal$sep IF(ISNUMBER(dRaw)$sep dRaw$sep IFERROR(DATEVALUE(dRaw)$sep 0))$sep " +
-                "sRaw$sep INDEX(D2:D1000$sep row)$sep " +
-                "sVal$sep IF(ISNUMBER(sRaw)$sep sRaw$sep IFERROR(TIMEVALUE(sRaw)$sep 0))$sep " +
-                "eRaw$sep INDEX(E2:E1000$sep row)$sep " +
-                "eVal$sep IF(ISNUMBER(eRaw)$sep eRaw$sep IFERROR(TIMEVALUE(eRaw)$sep 0))$sep " +
-                "sched$sep dVal + sVal$sep " +
-                "deadline$sep dVal + eVal + IF(eVal < sVal$sep 1$sep 0)$sep " +
-                "done$sep IF(ISNUMBER(f)$sep IF(f < 1$sep dVal + f$sep f)$sep IFERROR(DATEVALUE(f) + TIMEVALUE(f)$sep 0))$sep " +
-                "IF(OR(f=\"\"$sep f=\"-\")$sep " +
-                "IF(NOW() > deadline$sep \"Terlewat (Belum Qadha)\"$sep \"Belum Salat\")$sep " +
-                "IF(OR(ISNUMBER(SEARCH(\"Qadha\"$sep \"\" & f))$sep done > deadline)$sep \"Qadha Selesai\"$sep " +
-                "IF(done < sched$sep \"Sebelum Waktu Masuk\"$sep " +
-                "IF(done <= sched + (30/1440)$sep \"Tepat Waktu (Awal Waktu)\"$sep " +
-                "IF(done <= deadline - (15/1440)$sep \"Tepat Waktu\"$sep \"Akhir Waktu\")))))))"
+            val rawStatusFormula = "=ARRAYFORMULA(IF(B2:B1000=\"\"$sep \"\"$sep IF(F2:F1000=\"\"$sep \"\"$sep IF(F2:F1000=\"-\"$sep \"Belum\"$sep \"Sudah\"))))"
+            val doneExpr = "IF(ISNUMBER(F2:F1000)$sep IF(F2:F1000<1$sep B2:B1000+F2:F1000$sep F2:F1000)$sep IFERROR(DATEVALUE(LEFT(F2:F1000$sep 10))+TIMEVALUE(RIGHT(F2:F1000$sep 5))$sep IFERROR(DATEVALUE(F2:F1000)+TIMEVALUE(F2:F1000)$sep 0)))"
+            val schedExpr = "B2:B1000+D2:D1000"
+            val deadlineExpr = "B2:B1000+E2:E1000+IF(E2:E1000<D2:D1000$sep 1$sep 0)+0*NOW()"
+            val rawKeteranganFormula = "=ARRAYFORMULA(IF(B2:B1000=\"\"$sep \"\"$sep " +
+                "IF((F2:F1000=\"\")+(F2:F1000=\"-\")$sep " +
+                "IF(NOW()>$deadlineExpr$sep \"Terlewat (Belum Qadha)\"$sep \"Belum Salat\")$sep " +
+                "IF(ISNUMBER(SEARCH(\"Qadha\"$sep \"\"&F2:F1000))+($doneExpr>$deadlineExpr)$sep \"Qadha Selesai\"$sep " +
+                "IF($doneExpr<$schedExpr$sep \"Sebelum Waktu Masuk\"$sep " +
+                "IF($doneExpr<=$schedExpr+(30/1440)$sep \"Tepat Waktu (Awal Waktu)\"$sep " +
+                "IF($doneExpr<=$deadlineExpr-(15/1440)$sep \"Tepat Waktu\"$sep \"Akhir Waktu\")))))))"
 
             // 4. Batch Clear area sheet terlebih dahulu agar tidak ada data lama yang tersisa (dipangkas sesuai kolom aktif)
             try {
@@ -711,15 +705,18 @@ class GoogleSheetsSyncManager(
             applyWeeklyHeaderLayout(token, spreadsheetId)
 
             // 5. Pastikan semua sel data di semua sheet otomatis Rata Tengah (Horizontal & Vertikal) dan Diformat Estetik HANYA pada baris yang ada isinya
-            // Gunakan 1000 untuk Ringkasan Harian dan Rekap Waktu karena array formula spill otomatis
             applyCellStylingAndAlignments(
                 token = token,
                 spreadsheetId = spreadsheetId,
-                ringkasanRowCount = 1000,
+                ringkasanRowCount = ringkasanRows.length(),
                 mingguanRowCount = mingguanRows.length(),
-                rekapWaktuRowCount = 1000,
+                rekapWaktuRowCount = rekapWaktuRows.length(),
                 rawRowCount = rawRows.length()
             )
+
+            // 6. Paksa Google Sheets menghitung ulang array formula di Data Mentah (G2:H2).
+            // Tanpa ini, ARRAYFORMULA kompleks tidak dihitung otomatis dan user harus enter manual.
+            forceRecalculateFormulas(token, spreadsheetId, rawStatusFormula, rawKeteranganFormula)
 
             val webUrl = "https://docs.google.com/spreadsheets/d/$spreadsheetId"
             Result.success(webUrl)
@@ -1354,7 +1351,7 @@ class GoogleSheetsSyncManager(
                 for (col in 1..5) {
                     batchRequests.put(createColumnWidthRequest(sId, col, 95))
                 }
-                batchRequests.put(createColumnWidthRequest(sId, 6, 145)) // Muat "5/5 (100%)"
+                batchRequests.put(createColumnWidthRequest(sId, 6, 65)) // Muat "5/5"
             }
 
             // Ringkasan Mingguan: 39 kolom (0..39), 2 baris header + merge cells
@@ -1383,7 +1380,7 @@ class GoogleSheetsSyncManager(
                     batchRequests.put(createColumnWidthRequest(sId, col, 120)) // Kolom jam + keterangan Qadha diperlebar
                     batchRequests.put(createTextFormatRequest(sId, col))
                 }
-                batchRequests.put(createColumnWidthRequest(sId, 6, 145)) // Muat "5/5 (100%)"
+                batchRequests.put(createColumnWidthRequest(sId, 6, 65)) // Muat "5/5"
             }
 
             // Data Mentah: 8 kolom (0..8)
@@ -1816,8 +1813,6 @@ class GoogleSheetsSyncManager(
                     put("endColumnIndex", numCols)
                 })
                 put("cell", JSONObject().apply {
-                    // Kosongkan format bawaan pada baris tanpa data. Conditional
-                    // formatting tidak ikut terhapus karena merupakan rule terpisah.
                     put("userEnteredFormat", JSONObject())
                 })
                 put("fields", "userEnteredFormat")
@@ -1867,18 +1862,17 @@ class GoogleSheetsSyncManager(
                                     textRed = 0.13f, textGreen = 0.13f, textBlue = 0.14f,
                                     numberFormatType = "DATE", numberFormatPattern = "d MMMM yyyy"
                                 ))
-                                // Kolom 1..5 (Salat): center & middle
-                                batchRequests.put(createCenterAlignmentRequest(sId, 6, 1, endR))
-                                // Kolom 6 (Total Selesai): center & bold (warna background & teks diatur dinamis oleh Conditional Formatting)
+                                // Kolom 6 (Selesai): center (warna diatur Conditional Formatting)
                                 batchRequests.put(createColumnStyleRequest(
                                     sheetId = sId, startCol = 6, startRow = 1, endRow = endR,
-                                    bgRed = 1.0f, bgGreen = 1.0f, bgBlue = 1.0f,
-                                    bold = true
+                                    bgRed = 1.0f, bgGreen = 1.0f, bgBlue = 1.0f
                                 ))
                                 // Bersihkan baris kosong di bawahnya (endR..1000) agar tidak ada warna sisa
                                 if (endR < 1000) {
                                     batchRequests.put(createResetEmptyRowsRequest(sId, endR, 7))
                                 }
+                                // Center alignment SETELAH reset supaya baris spill tetap ke-center
+                                batchRequests.put(createCenterAlignmentRequest(sId, 7, 0, 1000))
                             }
                             "Ringkasan Mingguan" -> {
                                 val endR = maxOf(mingguanRowCount, 3)
@@ -1899,18 +1893,17 @@ class GoogleSheetsSyncManager(
                                     bgRed = 1.0f, bgGreen = 0.96f, bgBlue = 0.87f,
                                     textRed = 0.58f, textGreen = 0.32f, textBlue = 0.02f
                                 ))
-                                // Kolom 3..37 (35 sel salat): center & middle
-                                batchRequests.put(createCenterAlignmentRequest(sId, 38, 2, endR))
-                                // Kolom 38 (Total Selesai): center & bold (warna background & teks diatur dinamis oleh Conditional Formatting)
+                                // Kolom 38 (Selesai): center (warna diatur Conditional Formatting)
                                 batchRequests.put(createColumnStyleRequest(
                                     sheetId = sId, startCol = 38, startRow = 2, endRow = endR,
-                                    bgRed = 1.0f, bgGreen = 1.0f, bgBlue = 1.0f,
-                                    bold = true
+                                    bgRed = 1.0f, bgGreen = 1.0f, bgBlue = 1.0f
                                 ))
                                 // Bersihkan baris kosong di bawahnya (endR..1000) agar tidak ada warna sisa
                                 if (endR < 1000) {
                                     batchRequests.put(createResetEmptyRowsRequest(sId, endR, 39))
                                 }
+                                // Center alignment SETELAH reset supaya baris spill tetap ke-center
+                                batchRequests.put(createCenterAlignmentRequest(sId, 39, 1, 1000))
                             }
                             "Rekap Waktu" -> {
                                 val endR = maxOf(rekapWaktuRowCount, 2)
@@ -1926,16 +1919,17 @@ class GoogleSheetsSyncManager(
                                     sheetId = sId, startCol = 1, endCol = 6, startRow = 1, endRow = endR,
                                     numberFormatType = "TEXT"
                                 ))
-                                // Kolom 6 (Total Selesai): center & bold (warna background & teks diatur dinamis oleh Conditional Formatting)
+                                // Kolom 6 (Selesai): center (warna diatur Conditional Formatting)
                                 batchRequests.put(createColumnStyleRequest(
                                     sheetId = sId, startCol = 6, startRow = 1, endRow = endR,
-                                    bgRed = 1.0f, bgGreen = 1.0f, bgBlue = 1.0f,
-                                    bold = true
+                                    bgRed = 1.0f, bgGreen = 1.0f, bgBlue = 1.0f
                                 ))
                                 // Bersihkan baris kosong di bawahnya (endR..1000) agar tidak ada warna sisa
                                 if (endR < 1000) {
                                     batchRequests.put(createResetEmptyRowsRequest(sId, endR, 7))
                                 }
+                                // Center alignment SETELAH reset supaya baris spill tetap ke-center
+                                batchRequests.put(createCenterAlignmentRequest(sId, 7, 0, 1000))
                             }
                             "Data Mentah" -> {
                                 val endR = maxOf(rawRowCount, 2)
@@ -1981,11 +1975,12 @@ class GoogleSheetsSyncManager(
                                     textRed = 0.02f, textGreen = 0.40f, textBlue = 0.45f
                                 ))
                                 // Kolom 6 & 7 (Status & Keterangan): center & middle (warna ditangani conditional formatting)
-                                batchRequests.put(createCenterAlignmentRequest(sId, 8, 1, endR))
                                 // Bersihkan baris kosong di bawahnya (endR..1000) agar tidak ada warna sisa
                                 if (endR < 1000) {
                                     batchRequests.put(createResetEmptyRowsRequest(sId, endR, 8))
                                 }
+                                // Center alignment SETELAH reset supaya baris spill tetap ke-center (sampai 1000)
+                                batchRequests.put(createCenterAlignmentRequest(sId, 8, 1, 1000))
                             }
                             else -> {
                                 batchRequests.put(createCenterAlignmentRequest(sId, 10, 1, 1000))
@@ -2013,6 +2008,50 @@ class GoogleSheetsSyncManager(
                 }
             }
         } catch (_: Exception) {}
+    }
+
+    /**
+     * Paksa Google Sheets menghitung ulang array formula di Data Mentah kolom G & H.
+     * Menulis ulang formula di G2:H2 memicu recalculation karena formula mengandung
+     * fungsi volatile (+0*NOW()). Tanpa ini, ARRAYFORMULA kompleks sering kali tidak
+     * dihitung otomatis oleh Google Sheets API dan user harus enter manual.
+     */
+    private fun forceRecalculateFormulas(
+        token: String,
+        spreadsheetId: String,
+        rawStatusFormula: String,
+        rawKeteranganFormula: String
+    ) {
+        try {
+            val sheetTitle = "Data Mentah"
+            val payload = JSONObject().apply {
+                put("valueInputOption", "USER_ENTERED")
+                put("data", JSONArray().apply {
+                    put(JSONObject().apply {
+                        put("range", "'$sheetTitle'!G2:H2")
+                        put("majorDimension", "ROWS")
+                        put("values", JSONArray().apply {
+                            put(JSONArray().apply {
+                                put(rawStatusFormula)
+                                put(rawKeteranganFormula)
+                            })
+                        })
+                    })
+                })
+            }
+            val req = Request.Builder()
+                .url("$SHEETS_API_BASE/$spreadsheetId/values:batchUpdate")
+                .addHeader("Authorization", "Bearer $token")
+                .post(payload.toString().toRequestBody(jsonMediaType))
+                .build()
+            httpClient.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) {
+                    android.util.Log.e("GoogleSheetsSync", "Gagal force-recalculate formula (${response.code})")
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("GoogleSheetsSync", "Error force-recalculate: ${e.message}")
+        }
     }
 
     private fun createHeaderFormatRequest(sheetId: Int, numCols: Int, numRows: Int = 1): JSONObject {
