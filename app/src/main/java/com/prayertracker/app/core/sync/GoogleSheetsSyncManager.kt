@@ -506,15 +506,12 @@ class GoogleSheetsSyncManager(
             val weeklySpillFormula = """
                 =IFERROR(LET(
                   rawDates$sep 'Data Mentah'!${s}B${s}2:${s}B${s}1000$sep
-                  normalizedDates$sep ARRAYFORMULA(IF(ISNUMBER(rawDates)$sep rawDates$sep IFERROR(DATEVALUE(rawDates)$sep 0)))$sep
+                  normalizedDates$sep ARRAYFORMULA(IF(ISNUMBER(rawDates)$sep INT(rawDates)$sep IFERROR(DATEVALUE(rawDates)$sep 0)))$sep
                   weekStarts$sep SORT(UNIQUE(FILTER(normalizedDates-WEEKDAY(normalizedDates$sep 2)+1$sep normalizedDates>0))$sep 1$sep FALSE)$sep
                   checks$sep MAKEARRAY(ROWS(weekStarts)$sep 35$sep LAMBDA(rowIndex$sep columnIndex$sep LET(
                     targetDate$sep INDEX(weekStarts$sep rowIndex)+INT((columnIndex-1)/5)$sep
                     prayerName$sep INDEX({"Subuh"$sep "Dzuhur"$sep "Ashar"$sep "Maghrib"$sep "Isya"}$sep MOD(columnIndex-1$sep 5)+1)$sep
-                    IF(targetDate>TODAY()$sep ""$sep IF(OR(
-                      COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep targetDate$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep prayerName$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep
-                      COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep TEXT(targetDate$sep "yyyy-MM-dd")$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep prayerName$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0
-                    )$sep "✓"$sep "-"))
+                    IF(targetDate>TODAY()$sep ""$sep IF(COUNTIFS(normalizedDates$sep targetDate$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep prayerName$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep "✓"$sep "-"))
                   )))$sep
                   totals$sep BYROW(checks$sep LAMBDA(checkRow$sep LET(
                     completed$sep COUNTIF(checkRow$sep "✓")$sep
