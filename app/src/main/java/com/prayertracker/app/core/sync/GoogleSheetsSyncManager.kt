@@ -14,9 +14,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
-import java.time.LocalDate
 import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 import com.prayertracker.app.core.datastore.AppSettingsRepository
 import com.prayertracker.app.core.util.PrayerDateTimeUtils
 import com.prayertracker.app.core.util.PrayerStatusResolver
@@ -471,23 +469,27 @@ class GoogleSheetsSyncManager(
 
             // -----------------------------------------------------------------
             // SHEET 1: "Ringkasan Harian" (Overview Dinamis Terhubung ke Data Mentah)
+            // Satu formula spill di A2 membentuk seluruh tabel ringkasan harian.
             // -----------------------------------------------------------------
-            val ringkasanRows = JSONArray()
-            ringkasanRows.put(ringkasanHeader)
-
-            dates.forEachIndexed { idx, date ->
-                val r = idx + 2 // Baris 1-indexed di Google Sheets (Header di baris 1, data mulai baris 2)
-                val dateFormula = "=INDEX(UNIQUE(FILTER('Data Mentah'!${s}B:${s}B$sep 'Data Mentah'!${s}B:${s}B<>\"Tanggal\"$sep 'Data Mentah'!${s}B:${s}B<>\"\"))$sep ${idx + 1})"
-                val row = JSONArray().apply {
-                    put(dateFormula) // Kolom A (Tanggal dinamis terhubung langsung ke Data Mentah)
-                    put("=IF(COUNTIFS('Data Mentah'!${s}B:${s}B$sep ${s}A$r$sep 'Data Mentah'!${s}C:${s}C$sep \"Subuh\"$sep 'Data Mentah'!${s}G:${s}G$sep \"Sudah*\")>0$sep \"Sudah\"$sep \"Belum\")")
-                    put("=IF(COUNTIFS('Data Mentah'!${s}B:${s}B$sep ${s}A$r$sep 'Data Mentah'!${s}C:${s}C$sep \"Dzuhur\"$sep 'Data Mentah'!${s}G:${s}G$sep \"Sudah*\")>0$sep \"Sudah\"$sep \"Belum\")")
-                    put("=IF(COUNTIFS('Data Mentah'!${s}B:${s}B$sep ${s}A$r$sep 'Data Mentah'!${s}C:${s}C$sep \"Ashar\"$sep 'Data Mentah'!${s}G:${s}G$sep \"Sudah*\")>0$sep \"Sudah\"$sep \"Belum\")")
-                    put("=IF(COUNTIFS('Data Mentah'!${s}B:${s}B$sep ${s}A$r$sep 'Data Mentah'!${s}C:${s}C$sep \"Maghrib\"$sep 'Data Mentah'!${s}G:${s}G$sep \"Sudah*\")>0$sep \"Sudah\"$sep \"Belum\")")
-                    put("=IF(COUNTIFS('Data Mentah'!${s}B:${s}B$sep ${s}A$r$sep 'Data Mentah'!${s}C:${s}C$sep \"Isya\"$sep 'Data Mentah'!${s}G:${s}G$sep \"Sudah*\")>0$sep \"Sudah\"$sep \"Belum\")")
-                    put("=IF(${s}A$r=\"\"$sep \"\"$sep COUNTIF(B$r:F$r$sep \"Sudah*\") & \"/5 (\" & TEXT(COUNTIF(B$r:F$r$sep \"Sudah*\")/5$sep \"0%\") & \")\")")
-                }
-                ringkasanRows.put(row)
+            val ringkasanFormula = """
+                =IFERROR(LET(
+                  rawDates$sep 'Data Mentah'!${s}B${s}2:${s}B${s}1000$sep
+                  normalizedDates$sep ARRAYFORMULA(IF(ISNUMBER(rawDates)$sep rawDates$sep IFERROR(DATEVALUE(rawDates)$sep 0)))$sep
+                  uniqueDates$sep SORT(UNIQUE(FILTER(normalizedDates$sep normalizedDates>0))$sep 1$sep FALSE)$sep
+                  HSTACK(
+                    uniqueDates$sep
+                    ARRAYFORMULA(IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Subuh"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep "Sudah"$sep "Belum"))$sep
+                    ARRAYFORMULA(IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Dzuhur"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep "Sudah"$sep "Belum"))$sep
+                    ARRAYFORMULA(IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Ashar"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep "Sudah"$sep "Belum"))$sep
+                    ARRAYFORMULA(IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Maghrib"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep "Sudah"$sep "Belum"))$sep
+                    ARRAYFORMULA(IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Isya"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep "Sudah"$sep "Belum"))$sep
+                    ARRAYFORMULA(IF(uniqueDates=""$sep ""$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")&"/5 ("&TEXT(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")/5$sep "0%")&")"))
+                  )
+                )$sep "")
+            """.trimIndent().replace("\n", "")
+            val ringkasanRows = JSONArray().apply {
+                put(ringkasanHeader)
+                put(JSONArray().apply { put(ringkasanFormula); repeat(6) { put("") } })
             }
 
             // -----------------------------------------------------------------
@@ -497,110 +499,136 @@ class GoogleSheetsSyncManager(
             mingguanRows.put(h1)
             mingguanRows.put(h2)
 
-            val prayersOrder = listOf(
-                PrayerName.FAJR,
-                PrayerName.DHUHR,
-                PrayerName.ASR,
-                PrayerName.MAGHRIB,
-                PrayerName.ISHA
-            )
-            // Hanya buat minggu yang benar-benar memiliki data. Sebelumnya ada
-            // 104 x 39 formula setiap sync, termasuk untuk minggu kosong; beban
-            // kalkulasi itulah yang paling sering menyebabkan sync timeout.
-            val weeklyStarts = dates.mapNotNull { date ->
-                runCatching { LocalDate.parse(date) }.getOrNull()
-                    ?.with(java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY))
-            }.distinct().sortedDescending()
-            val indonesianLocale = java.util.Locale("id", "ID")
-            val monthFormatter = DateTimeFormatter.ofPattern("MMMM yyyy", indonesianLocale)
-            val rangeFormatter = DateTimeFormatter.ofPattern("d MMM", indonesianLocale)
-            val today = LocalDate.now()
-
-            weeklyStarts.forEachIndexed { idx, monday ->
-                val r = idx + 3 // Baris 1 & 2 adalah header, data mulai baris 3.
-                val row = JSONArray().apply {
-                    put(monday.format(monthFormatter))
-                    put("Minggu ${((monday.dayOfMonth - 1) / 7) + 1}")
-                    put("${monday.format(rangeFormatter)} - ${monday.plusDays(6).format(rangeFormatter)}")
-
-                    // Status tetap otomatis mengikuti Data Mentah, namun maksimal
-                    // 35 formula per minggu yang memang punya data.
-                    for (dayOffset in 0..6) {
-                        val targetDate = monday.plusDays(dayOffset.toLong())
-                        for (pName in prayersOrder) {
-                            if (targetDate.isAfter(today)) {
-                                put("")
-                            } else {
-                                val pDisplayName = pName.displayName
-                                val targetDateText = targetDate.toString()
-                                val targetDateFunction = "DATE(${targetDate.year}$sep ${targetDate.monthValue}$sep ${targetDate.dayOfMonth})"
-                                put("=IF(OR(COUNTIFS('Data Mentah'!${s}B:${s}B$sep $targetDateFunction$sep 'Data Mentah'!${s}C:${s}C$sep \"$pDisplayName\"$sep 'Data Mentah'!${s}G:${s}G$sep \"Sudah*\")>0$sep COUNTIFS('Data Mentah'!${s}B:${s}B$sep \"$targetDateText\"$sep 'Data Mentah'!${s}C:${s}C$sep \"$pDisplayName\"$sep 'Data Mentah'!${s}G:${s}G$sep \"Sudah*\")>0)$sep \"✓\"$sep \"-\")")
-                            }
-                        }
-                    }
-
-                    put("=IF((COUNTIF(D$r:AL$r$sep \"✓\") + COUNTIF(D$r:AL$r$sep \"-\"))=0$sep \"-\"$sep COUNTIF(D$r:AL$r$sep \"✓\") & \"/\" & (COUNTIF(D$r:AL$r$sep \"✓\") + COUNTIF(D$r:AL$r$sep \"-\")) & \" (\" & TEXT(COUNTIF(D$r:AL$r$sep \"✓\") / (COUNTIF(D$r:AL$r$sep \"✓\") + COUNTIF(D$r:AL$r$sep \"-\"))$sep \"0%\") & \")\")")
-                }
-                mingguanRows.put(row)
+            // Satu formula spill di A3 membentuk seluruh matriks mingguan. Berbeda
+            // dari versi 104 x 39 formula, tanggal atau minggu baru di Data Mentah
+            // langsung muncul otomatis tanpa perlu sync dan tanpa beban ribuan formula.
+            val weeklySpillFormula = """
+                =IFERROR(LET(
+                  rawDates$sep 'Data Mentah'!${s}B${s}2:${s}B${s}1000$sep
+                  normalizedDates$sep ARRAYFORMULA(IF(ISNUMBER(rawDates)$sep rawDates$sep IFERROR(DATEVALUE(rawDates)$sep 0)))$sep
+                  weekStarts$sep SORT(UNIQUE(FILTER(normalizedDates-WEEKDAY(normalizedDates$sep 2)+1$sep normalizedDates>0))$sep 1$sep FALSE)$sep
+                  checks$sep MAKEARRAY(ROWS(weekStarts)$sep 35$sep LAMBDA(rowIndex$sep columnIndex$sep LET(
+                    targetDate$sep INDEX(weekStarts$sep rowIndex)+INT((columnIndex-1)/5)$sep
+                    prayerName$sep CHOOSE(MOD(columnIndex-1$sep 5)+1$sep "Subuh"$sep "Dzuhur"$sep "Ashar"$sep "Maghrib"$sep "Isya")$sep
+                    IF(targetDate>TODAY()$sep ""$sep IF(OR(
+                      COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep targetDate$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep prayerName$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep
+                      COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep TEXT(targetDate$sep "yyyy-MM-dd")$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep prayerName$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0
+                    )$sep "✓"$sep "-"))
+                  )))$sep
+                  totals$sep BYROW(checks$sep LAMBDA(checkRow$sep LET(
+                    completed$sep COUNTIF(checkRow$sep "✓")$sep
+                    active$sep completed+COUNTIF(checkRow$sep "-")$sep
+                    IF(active=0$sep "-"$sep completed&"/"&active&" ("&TEXT(completed/active$sep "0%")&")")
+                  )))$sep
+                  HSTACK(
+                    TEXT(weekStarts$sep "mmmm yyyy")$sep
+                    "Minggu "&IFERROR(LET(bulan$sep MONTH(weekStarts)$sep tahun$sep YEAR(weekStarts)$sep tgl1$sep DATE(tahun$sep bulan$sep 1)$sep mingguPertama$sep tgl1 + MOD(7 - WEEKDAY(tgl1$sep 2)$sep 7)$sep mingguKe$sep INT((weekStarts - mingguPertama) / 7) + 2$sep IF(mingguKe < 1$sep 1$sep mingguKe))$sep "Minggu 1")$sep
+                    TEXT(weekStarts$sep "d MMM")&" - "&TEXT(weekStarts+6$sep "d MMM")$sep
+                    checks$sep totals
+                  )
+                )$sep "")
+            """.trimIndent().replace("\n", "")
+            val weeklyFormulaRow = JSONArray().apply {
+                put(weeklySpillFormula)
+                repeat(38) { put("") }
             }
+            mingguanRows.put(weeklyFormulaRow)
 
             // -----------------------------------------------------------------
             // SHEET 3: "Rekap Waktu" (Jam Selesai Dinamis Terhubung Langsung ke Data Mentah)
+            // Satu formula spill di A2 membentuk seluruh tabel rekap waktu.
+            // Pakai BYROW supaya FILTER per-baris aman (gak meledak di ARRAYFORMULA).
             // -----------------------------------------------------------------
-            val rekapWaktuRows = JSONArray()
-            rekapWaktuRows.put(rekapWaktuHeader)
-
-            fun timeFormula(prayerName: String, r: Int): String {
-                return "=IF(COUNTIFS('Data Mentah'!${s}B:${s}B$sep ${s}A$r$sep 'Data Mentah'!${s}C:${s}C$sep \"$prayerName\"$sep 'Data Mentah'!${s}G:${s}G$sep \"Sudah*\"$sep 'Data Mentah'!${s}F:${s}F$sep \"<>-\")>0$sep TEXT(INDEX(FILTER('Data Mentah'!${s}F:${s}F$sep 'Data Mentah'!${s}B:${s}B=${s}A$r$sep 'Data Mentah'!${s}C:${s}C=\"$prayerName\")$sep 1)$sep \"HH:mm\") & IF(COUNTIFS('Data Mentah'!${s}B:${s}B$sep ${s}A$r$sep 'Data Mentah'!${s}C:${s}C$sep \"$prayerName\"$sep 'Data Mentah'!${s}H:${s}H$sep \"*Qadha*\")>0$sep \" (Qadha)\"$sep \"\")$sep \"Belum\")"
-            }
-
-            dates.forEachIndexed { idx, date ->
-                val r = idx + 2
-                val dateFormula = "=INDEX(UNIQUE(FILTER('Data Mentah'!${s}B:${s}B$sep 'Data Mentah'!${s}B:${s}B<>\"Tanggal\"$sep 'Data Mentah'!${s}B:${s}B<>\"\"))$sep ${idx + 1})"
-                val row = JSONArray().apply {
-                    put(dateFormula) // Kolom A (Tanggal dinamis terhubung langsung ke Data Mentah)
-                    put(timeFormula("Subuh", r))
-                    put(timeFormula("Dzuhur", r))
-                    put(timeFormula("Ashar", r))
-                    put(timeFormula("Maghrib", r))
-                    put(timeFormula("Isya", r))
-                    put("=IF(${s}A$r=\"\"$sep \"\"$sep COUNTIF(B$r:F$r$sep \"<>Belum\") & \"/5 (\" & TEXT(COUNTIF(B$r:F$r$sep \"<>Belum\")/5$sep \"0%\") & \")\")")
-                }
-                rekapWaktuRows.put(row)
+            val rekapWaktuFormula = """
+                =IFERROR(LET(
+                  rawDates$sep 'Data Mentah'!${s}B${s}2:${s}B${s}1000$sep
+                  normalizedDates$sep ARRAYFORMULA(IF(ISNUMBER(rawDates)$sep rawDates$sep IFERROR(DATEVALUE(rawDates)$sep 0)))$sep
+                  uniqueDates$sep SORT(UNIQUE(FILTER(normalizedDates$sep normalizedDates>0))$sep 1$sep FALSE)$sep
+                  HSTACK(
+                    uniqueDates$sep
+                    BYROW(uniqueDates$sep LAMBDA(d$sep LET(
+                      done$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Subuh"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")$sep
+                      tm$sep IF(done=0$sep ""$sep TEXT(INDEX(FILTER('Data Mentah'!${s}F${s}2:${s}F${s}1000$sep ('Data Mentah'!${s}B${s}2:${s}B${s}1000=d)*('Data Mentah'!${s}C${s}2:${s}C${s}1000="Subuh"))$sep 1)$sep "HH:mm"))$sep
+                      qd$sep IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Subuh"$sep 'Data Mentah'!${s}H${s}2:${s}H${s}1000$sep "*Qadha*")>0$sep " (Qadha)"$sep "")$sep
+                      IF(done=0$sep "Belum"$sep tm&qd)
+                    )))$sep
+                    BYROW(uniqueDates$sep LAMBDA(d$sep LET(
+                      done$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Dzuhur"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")$sep
+                      tm$sep IF(done=0$sep ""$sep TEXT(INDEX(FILTER('Data Mentah'!${s}F${s}2:${s}F${s}1000$sep ('Data Mentah'!${s}B${s}2:${s}B${s}1000=d)*('Data Mentah'!${s}C${s}2:${s}C${s}1000="Dzuhur"))$sep 1)$sep "HH:mm"))$sep
+                      qd$sep IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Dzuhur"$sep 'Data Mentah'!${s}H${s}2:${s}H${s}1000$sep "*Qadha*")>0$sep " (Qadha)"$sep "")$sep
+                      IF(done=0$sep "Belum"$sep tm&qd)
+                    )))$sep
+                    BYROW(uniqueDates$sep LAMBDA(d$sep LET(
+                      done$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Ashar"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")$sep
+                      tm$sep IF(done=0$sep ""$sep TEXT(INDEX(FILTER('Data Mentah'!${s}F${s}2:${s}F${s}1000$sep ('Data Mentah'!${s}B${s}2:${s}B${s}1000=d)*('Data Mentah'!${s}C${s}2:${s}C${s}1000="Ashar"))$sep 1)$sep "HH:mm"))$sep
+                      qd$sep IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Ashar"$sep 'Data Mentah'!${s}H${s}2:${s}H${s}1000$sep "*Qadha*")>0$sep " (Qadha)"$sep "")$sep
+                      IF(done=0$sep "Belum"$sep tm&qd)
+                    )))$sep
+                    BYROW(uniqueDates$sep LAMBDA(d$sep LET(
+                      done$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Maghrib"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")$sep
+                      tm$sep IF(done=0$sep ""$sep TEXT(INDEX(FILTER('Data Mentah'!${s}F${s}2:${s}F${s}1000$sep ('Data Mentah'!${s}B${s}2:${s}B${s}1000=d)*('Data Mentah'!${s}C${s}2:${s}C${s}1000="Maghrib"))$sep 1)$sep "HH:mm"))$sep
+                      qd$sep IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Maghrib"$sep 'Data Mentah'!${s}H${s}2:${s}H${s}1000$sep "*Qadha*")>0$sep " (Qadha)"$sep "")$sep
+                      IF(done=0$sep "Belum"$sep tm&qd)
+                    )))$sep
+                    BYROW(uniqueDates$sep LAMBDA(d$sep LET(
+                      done$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Isya"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")$sep
+                      tm$sep IF(done=0$sep ""$sep TEXT(INDEX(FILTER('Data Mentah'!${s}F${s}2:${s}F${s}1000$sep ('Data Mentah'!${s}B${s}2:${s}B${s}1000=d)*('Data Mentah'!${s}C${s}2:${s}C${s}1000="Isya"))$sep 1)$sep "HH:mm"))$sep
+                      qd$sep IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Isya"$sep 'Data Mentah'!${s}H${s}2:${s}H${s}1000$sep "*Qadha*")>0$sep " (Qadha)"$sep "")$sep
+                      IF(done=0$sep "Belum"$sep tm&qd)
+                    )))$sep
+                    ARRAYFORMULA(IF(uniqueDates=""$sep ""$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")&"/5 ("&TEXT(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")/5$sep "0%")&")"))
+                  )
+                )$sep "")
+            """.trimIndent().replace("\n", "")
+            val rekapWaktuRows = JSONArray().apply {
+                put(rekapWaktuHeader)
+                put(JSONArray().apply { put(rekapWaktuFormula); repeat(6) { put("") } })
             }
 
             // -----------------------------------------------------------------
             // SHEET 4: "Data Mentah" (Rapi, Human-Friendly dengan ID Unik Teks)
+            // Kolom G (Status Ibadah) & H (Keterangan) pake array formula di G2 & H2.
             // -----------------------------------------------------------------
             val rawRows = JSONArray()
             rawRows.put(rawHeader)
 
             allPrayers.forEachIndexed { idx, p ->
-                val r = idx + 2 // 1-indexed baris di Sheet Data Mentah (header di baris 1)
                 val isDone = p.status == PrayerStatus.COMPLETED || p.status == PrayerStatus.QADHA_COMPLETED
                 val jamSelesai = if (isDone) formatEpochWithDate(p.completedAtEpoch ?: p.scheduledTimeEpoch) else "-"
-                val keterangan = resolveKeterangan(
-                    status = p.status,
-                    completedAtEpoch = p.completedAtEpoch,
-                    scheduledTimeEpoch = p.scheduledTimeEpoch,
-                    endTimeEpoch = p.endTimeEpoch
-                )
-
-                val statusFormula = PrayerStatusResolver.buildGoogleSheetsStatusFormula(r, sep, s)
-                val keteranganFormula = PrayerStatusResolver.buildGoogleSheetsKeteranganFormula(r, sep, s)
 
                 val row = JSONArray().apply {
-                    put(p.id)
-                    put(p.prayerDate)
-                    put(p.prayerName.displayName)
-                    put(formatEpoch(p.scheduledTimeEpoch))
-                    put(formatEpoch(p.endTimeEpoch))
-                    put(jamSelesai)
-                    put(statusFormula)
-                    put(keteranganFormula)
+                    put(p.id)                    // A: ID
+                    put(p.prayerDate)            // B: Tanggal
+                    put(p.prayerName.displayName) // C: Salat
+                    put(formatEpoch(p.scheduledTimeEpoch)) // D: Jadwal Masuk
+                    put(formatEpoch(p.endTimeEpoch))       // E: Batas Akhir
+                    put(jamSelesai)              // F: Jam Selesai
+                    put("")                      // G: Status Ibadah (diisi array formula dari G2)
+                    put("")                      // H: Keterangan (diisi array formula dari H2)
                 }
                 rawRows.put(row)
             }
+
+            // Array formula untuk Kolom G (Status Ibadah) & H (Keterangan)
+            // Ditulis terpisah ke G2:H2 setelah data A:F
+            val rawStatusFormula = "=ARRAYFORMULA(IF(F2:F1000=\"\"$sep \"\"$sep IF(F2:F1000=\"-\"$sep \"Belum\"$sep \"Sudah\")))"
+            val rawKeteranganFormula = "=ARRAYFORMULA(BYROW(F2:F1000$sep LAMBDA(f$sep LET(" +
+                "row$sep ROW()-1$sep " +
+                "dRaw$sep INDEX(B2:B1000$sep row)$sep " +
+                "dVal$sep IF(ISNUMBER(dRaw)$sep dRaw$sep IFERROR(DATEVALUE(dRaw)$sep 0))$sep " +
+                "sRaw$sep INDEX(D2:D1000$sep row)$sep " +
+                "sVal$sep IF(ISNUMBER(sRaw)$sep sRaw$sep IFERROR(TIMEVALUE(sRaw)$sep 0))$sep " +
+                "eRaw$sep INDEX(E2:E1000$sep row)$sep " +
+                "eVal$sep IF(ISNUMBER(eRaw)$sep eRaw$sep IFERROR(TIMEVALUE(eRaw)$sep 0))$sep " +
+                "sched$sep dVal + sVal$sep " +
+                "deadline$sep dVal + eVal + IF(eVal < sVal$sep 1$sep 0)$sep " +
+                "done$sep IF(ISNUMBER(f)$sep IF(f < 1$sep dVal + f$sep f)$sep IFERROR(DATEVALUE(f) + TIMEVALUE(f)$sep 0))$sep " +
+                "IF(OR(f=\"\"$sep f=\"-\")$sep " +
+                "IF(NOW() > deadline$sep \"Terlewat (Belum Qadha)\"$sep \"Belum Salat\")$sep " +
+                "IF(OR(ISNUMBER(SEARCH(\"Qadha\"$sep \"\" & f))$sep done > deadline)$sep \"Qadha Selesai\"$sep " +
+                "IF(done < sched$sep \"Sebelum Waktu Masuk\"$sep " +
+                "IF(done <= sched + (30/1440)$sep \"Tepat Waktu (Awal Waktu)\"$sep " +
+                "IF(done <= deadline - (15/1440)$sep \"Tepat Waktu\"$sep \"Akhir Waktu\")))))))"
 
             // 4. Batch Clear area sheet terlebih dahulu agar tidak ada data lama yang tersisa (dipangkas sesuai kolom aktif)
             try {
@@ -627,6 +655,7 @@ class GoogleSheetsSyncManager(
             clearWeeklyHeaderMerges(token, spreadsheetId)
 
             // 5. Batch Update values keempat sheet sekaligus
+            // Data Mentah: A:F = static values, G2 = array formula Status, H2 = array formula Keterangan
             val updatePayload = JSONObject().apply {
                 put("valueInputOption", "USER_ENTERED")
                 put("data", JSONArray().apply {
@@ -650,6 +679,16 @@ class GoogleSheetsSyncManager(
                         put("majorDimension", "ROWS")
                         put("values", rawRows)
                     })
+                    put(JSONObject().apply {
+                        put("range", "'Data Mentah'!G2")
+                        put("majorDimension", "ROWS")
+                        put("values", JSONArray().put(JSONArray().put(rawStatusFormula)))
+                    })
+                    put(JSONObject().apply {
+                        put("range", "'Data Mentah'!H2")
+                        put("majorDimension", "ROWS")
+                        put("values", JSONArray().put(JSONArray().put(rawKeteranganFormula)))
+                    })
                 })
             }
 
@@ -672,12 +711,13 @@ class GoogleSheetsSyncManager(
             applyWeeklyHeaderLayout(token, spreadsheetId)
 
             // 5. Pastikan semua sel data di semua sheet otomatis Rata Tengah (Horizontal & Vertikal) dan Diformat Estetik HANYA pada baris yang ada isinya
+            // Gunakan 1000 untuk Ringkasan Harian dan Rekap Waktu karena array formula spill otomatis
             applyCellStylingAndAlignments(
                 token = token,
                 spreadsheetId = spreadsheetId,
-                ringkasanRowCount = ringkasanRows.length(),
+                ringkasanRowCount = 1000,
                 mingguanRowCount = mingguanRows.length(),
-                rekapWaktuRowCount = rekapWaktuRows.length(),
+                rekapWaktuRowCount = 1000,
                 rawRowCount = rawRows.length()
             )
 
