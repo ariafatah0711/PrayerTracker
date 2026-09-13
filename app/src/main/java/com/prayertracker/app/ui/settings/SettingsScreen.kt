@@ -46,6 +46,7 @@ fun SettingsScreen(
     val context = LocalContext.current
     val settings by viewModel.settings.collectAsState()
     val isSyncing by viewModel.isSyncing.collectAsState()
+    val activeCloudSyncAction by viewModel.activeCloudSyncAction.collectAsState()
     val syncMessage by viewModel.syncMessage.collectAsState()
     val showSyncChoiceDialog by viewModel.showSyncChoiceDialog.collectAsState()
     val showTrashCloudConfirmDialog by viewModel.showTrashCloudConfirmDialog.collectAsState()
@@ -577,14 +578,14 @@ fun SettingsScreen(
                                     shape = RoundedCornerShape(10.dp),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    if (isSyncing) {
+                                    if (isSyncing && activeCloudSyncAction == CloudSyncAction.UPLOAD) {
                                         CircularProgressIndicator(
                                             modifier = Modifier.size(16.dp),
                                             color = Color.White,
                                             strokeWidth = 2.dp
                                         )
                                         Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Sedang Sinkronisasi...", color = Color.White)
+                                        Text("Sedang Mengunggah Data...", color = Color.White)
                                     } else {
                                         Icon(Icons.Default.CloudUpload, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                                         Spacer(modifier = Modifier.width(8.dp))
@@ -601,9 +602,19 @@ fun SettingsScreen(
                                     colors = ButtonDefaults.outlinedButtonColors(contentColor = EmeraldLight),
                                     border = androidx.compose.foundation.BorderStroke(1.dp, EmeraldLight.copy(alpha = 0.5f))
                                 ) {
-                                    Icon(Icons.Default.CloudDownload, contentDescription = null, tint = EmeraldLight, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Tarik Data dari Cloud (Download ke HP)", fontWeight = FontWeight.SemiBold)
+                                    if (isSyncing && activeCloudSyncAction == CloudSyncAction.PULL) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            color = EmeraldLight,
+                                            strokeWidth = 2.dp
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Sedang Menarik Data...", fontWeight = FontWeight.SemiBold)
+                                    } else {
+                                        Icon(Icons.Default.CloudDownload, contentDescription = null, tint = EmeraldLight, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Tarik Data dari Cloud (Download ke HP)", fontWeight = FontWeight.SemiBold)
+                                    }
                                 }
 
                                 // Action 3: Buka Google Sheets

@@ -25,6 +25,11 @@ import kotlinx.coroutines.withContext
 import com.prayertracker.app.domain.model.PredefinedCity
 import com.prayertracker.app.domain.model.defaultIndonesianCities
 
+enum class CloudSyncAction {
+    UPLOAD,
+    PULL
+}
+
 class SettingsViewModel(
     private val settingsRepository: AppSettingsRepository,
     private val googleAuthManager: GoogleAuthManager,
@@ -81,6 +86,9 @@ class SettingsViewModel(
 
     private val _isSyncing = MutableStateFlow(false)
     val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
+
+    private val _activeCloudSyncAction = MutableStateFlow<CloudSyncAction?>(null)
+    val activeCloudSyncAction: StateFlow<CloudSyncAction?> = _activeCloudSyncAction.asStateFlow()
 
     private val _syncMessage = MutableStateFlow<String?>(null)
     val syncMessage: StateFlow<String?> = _syncMessage.asStateFlow()
@@ -227,10 +235,17 @@ class SettingsViewModel(
         _showSyncChoiceDialog.value = false
         viewModelScope.launch {
             _isSyncing.value = true
+            _activeCloudSyncAction.value = CloudSyncAction.PULL
             _syncMessage.value = "Sedang menarik data dari Cloud ke HP..."
-            val res = syncCoordinator.syncCloudToLocal()
-            _isSyncing.value = false
-            _syncMessage.value = if (res.isSuccess) res.getOrNull() else "Gagal: ${res.exceptionOrNull()?.localizedMessage}"
+            try {
+                val res = syncCoordinator.syncCloudToLocal()
+                _syncMessage.value = if (res.isSuccess) res.getOrNull() else "Gagal: ${res.exceptionOrNull()?.localizedMessage}"
+            } catch (e: Exception) {
+                _syncMessage.value = "Gagal menarik data: ${e.localizedMessage}"
+            } finally {
+                _isSyncing.value = false
+                _activeCloudSyncAction.value = null
+            }
         }
     }
 
@@ -238,10 +253,17 @@ class SettingsViewModel(
         _showSyncChoiceDialog.value = false
         viewModelScope.launch {
             _isSyncing.value = true
+            _activeCloudSyncAction.value = CloudSyncAction.UPLOAD
             _syncMessage.value = "Sedang mengunggah data HP ke Cloud..."
-            val res = syncCoordinator.syncLocalToCloud()
-            _isSyncing.value = false
-            _syncMessage.value = if (res.isSuccess) "Data HP berhasil diunggah ke Google Drive & Spreadsheet!" else "Gagal: ${res.exceptionOrNull()?.localizedMessage}"
+            try {
+                val res = syncCoordinator.syncLocalToCloud()
+                _syncMessage.value = if (res.isSuccess) "Data HP berhasil diunggah ke Google Drive & Spreadsheet!" else "Gagal: ${res.exceptionOrNull()?.localizedMessage}"
+            } catch (e: Exception) {
+                _syncMessage.value = "Gagal mengunggah data: ${e.localizedMessage}"
+            } finally {
+                _isSyncing.value = false
+                _activeCloudSyncAction.value = null
+            }
         }
     }
 

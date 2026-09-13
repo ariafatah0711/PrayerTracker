@@ -43,8 +43,7 @@
             android:turnScreenOn="true"
             android:taskAffinity=""
             android:launchMode="singleInstance"
-            android:excludeFromRecents="true"
-            android:noHistory="true" />
+            android:excludeFromRecents="true" />
 
         <!-- Receiver for Exact Prayer and Snooze Alarms -->
         <receiver

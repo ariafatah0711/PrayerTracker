@@ -26,6 +26,7 @@ class BootReceiver : BroadcastReceiver() {
             val repository = app.repository
             val alarmScheduler = app.alarmScheduler
             val settingsRepo = app.settingsRepository
+            val notificationHelper = app.notificationHelper
 
             CoroutineScope(Dispatchers.IO).launch {
                 try {
@@ -42,14 +43,45 @@ class BootReceiver : BroadcastReceiver() {
                         zoneId = ZoneId.systemDefault()
                     )
 
-                    // Reschedule upcoming prayer alarms
+                    val now = System.currentTimeMillis()
+
+                    // Reschedule upcoming prayer alarms OR restore ongoing prayer notification
                     todayPrayers.forEachIndexed { index, prayer ->
-                        if (prayer.status == PrayerStatus.PENDING && prayer.scheduledEpoch > System.currentTimeMillis()) {
-                            alarmScheduler.schedulePrayerEntry(
+                        val notifId = PrayerAlarmScheduler.getNotificationId(prayer.prayerName.order)
+                        val effEnd = com.prayertracker.app.core.util.PrayerDateTimeUtils.calculateEffectiveEndTime(
+                            prayer.scheduledEpoch,
+                            prayer.endEpoch
+                        )
+
+                        if (prayer.status == PrayerStatus.PENDING) {
+                            if (prayer.scheduledEpoch > now) {
+                                alarmScheduler.schedulePrayerEntry(
+                                    prayerId = prayer.id,
+                                    prayerName = prayer.prayerName.displayName,
+                                    triggerEpoch = prayer.scheduledEpoch,
+                                    notificationId = notifId
+                                )
+                            } else if (now < effEnd) {
+                                // Waktu salat sedang berlangsung saat HP baru nyala / app baru di-update!
+                                if (!PrayerAlarmScheduler.isExplicitlySnoozed()) {
+                                    notificationHelper.showPrayerIncomingNotification(
+                                        prayerId = prayer.id,
+                                        prayerName = prayer.prayerName.displayName,
+                                        timeFormatted = prayer.formattedScheduledTime,
+                                        notificationId = notifId,
+                                        otwMinutes = settings.otwIntervalMinutes,
+                                        noSnoozeMinutes = settings.noSnoozeIntervalMinutes
+                                    )
+                                    // Munculkan overlay jika diizinkan
+                                    app.checkAndShowOngoingPrayerOverlay()
+                                }
+                            }
+                        } else if (prayer.status == PrayerStatus.OTW && now < effEnd) {
+                            notificationHelper.showOtwFollowUpNotification(
                                 prayerId = prayer.id,
                                 prayerName = prayer.prayerName.displayName,
-                                triggerEpoch = prayer.scheduledEpoch,
-                                notificationId = 1000 + index
+                                notificationId = notifId,
+                                noSnoozeMinutes = settings.noSnoozeIntervalMinutes
                             )
                         }
                     }

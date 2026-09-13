@@ -72,14 +72,43 @@ class DashboardViewModel(
                 installedAtEpoch = settings.installedAtEpoch
             )
 
-            // Reschedule any pending alarms for today's prayers
+            val now = System.currentTimeMillis()
+
+            // Reschedule any pending alarms for today's prayers OR restore ongoing prayer notification
             initialPrayers.forEachIndexed { index, prayer ->
-                if (prayer.status == PrayerStatus.PENDING && prayer.scheduledEpoch > System.currentTimeMillis()) {
-                    alarmScheduler.schedulePrayerEntry(
+                val notifId = PrayerAlarmScheduler.getNotificationId(prayer.prayerName.order)
+                val effEnd = com.prayertracker.app.core.util.PrayerDateTimeUtils.calculateEffectiveEndTime(
+                    prayer.scheduledEpoch,
+                    prayer.endEpoch
+                )
+
+                if (prayer.status == PrayerStatus.PENDING) {
+                    if (prayer.scheduledEpoch > now) {
+                        alarmScheduler.schedulePrayerEntry(
+                            prayerId = prayer.id,
+                            prayerName = prayer.effectiveDisplayName,
+                            triggerEpoch = prayer.scheduledEpoch,
+                            notificationId = notifId
+                        )
+                    } else if (now < effEnd) {
+                        // Sedang masuk waktu salat, pastikan status bar notif aktif
+                        if (!PrayerAlarmScheduler.isExplicitlySnoozed()) {
+                            notificationHelper.showPrayerIncomingNotification(
+                                prayerId = prayer.id,
+                                prayerName = prayer.effectiveDisplayName,
+                                timeFormatted = prayer.formattedScheduledTime,
+                                notificationId = notifId,
+                                otwMinutes = settings.otwIntervalMinutes,
+                                noSnoozeMinutes = settings.noSnoozeIntervalMinutes
+                            )
+                        }
+                    }
+                } else if (prayer.status == PrayerStatus.OTW && now < effEnd) {
+                    notificationHelper.showOtwFollowUpNotification(
                         prayerId = prayer.id,
                         prayerName = prayer.effectiveDisplayName,
-                        triggerEpoch = prayer.scheduledEpoch,
-                        notificationId = 1000 + index
+                        notificationId = notifId,
+                        noSnoozeMinutes = settings.noSnoozeIntervalMinutes
                     )
                 }
             }
@@ -222,6 +251,7 @@ class DashboardViewModel(
     }
 
     fun onYesClicked(prayerId: String) {
+        PrayerAlarmScheduler.clearExplicitSnooze()
         viewModelScope.launch(Dispatchers.IO) {
             confirmPrayerUseCase(prayerId)
             val prayer = _uiState.value.todayPrayers.find { it.id == prayerId }
@@ -237,6 +267,7 @@ class DashboardViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             processNoUseCase(prayerId)
             val settings = settingsRepository.settingsFlow.first()
+            PrayerAlarmScheduler.setExplicitSnooze(settings.noSnoozeIntervalMinutes)
             val prayer = _uiState.value.todayPrayers.find { it.id == prayerId }
             if (prayer != null) {
                 val baseId = PrayerAlarmScheduler.getNotificationId(prayer.prayerName.order)
@@ -260,6 +291,7 @@ class DashboardViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             processOtwUseCase(prayerId)
             val settings = settingsRepository.settingsFlow.first()
+            PrayerAlarmScheduler.setExplicitSnooze(settings.otwIntervalMinutes)
             val prayer = _uiState.value.todayPrayers.find { it.id == prayerId }
             if (prayer != null) {
                 val baseId = PrayerAlarmScheduler.getNotificationId(prayer.prayerName.order)

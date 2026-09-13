@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import com.prayertracker.app.PrayerTrackerApp
+import com.prayertracker.app.scheduler.PrayerAlarmScheduler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -30,6 +31,7 @@ class PrayerNotificationReceiver : BroadcastReceiver() {
                 when (intent.action) {
                     NotificationHelper.ACTION_PRAYER_YES -> {
                         // User clicked YES
+                        PrayerAlarmScheduler.clearExplicitSnooze()
                         if (!prayerId.startsWith("test_")) {
                             repository.confirmPrayer(prayerId)
                         }
@@ -39,6 +41,7 @@ class PrayerNotificationReceiver : BroadcastReceiver() {
 
                     NotificationHelper.ACTION_PRAYER_NO -> {
                         // User clicked NO / BELUM
+                        PrayerAlarmScheduler.setExplicitSnooze(settings.noSnoozeIntervalMinutes)
                         if (!prayerId.startsWith("test_")) {
                             repository.processNo(prayerId)
                         }
@@ -61,6 +64,7 @@ class PrayerNotificationReceiver : BroadcastReceiver() {
 
                     NotificationHelper.ACTION_PRAYER_OTW -> {
                         // User clicked OTW
+                        PrayerAlarmScheduler.setExplicitSnooze(settings.otwIntervalMinutes)
                         if (!prayerId.startsWith("test_")) {
                             repository.processOtw(prayerId)
                         }

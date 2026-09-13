@@ -25,6 +25,7 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
+                PrayerAlarmScheduler.clearExplicitSnooze()
                 // Reconcile missed prayers first
                 repository.reconcileMissedPrayers()
 

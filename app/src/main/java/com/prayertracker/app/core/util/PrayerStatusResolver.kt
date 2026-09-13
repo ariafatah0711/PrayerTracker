@@ -32,9 +32,10 @@ object PrayerStatusResolver {
                 val doneAt = completedAtEpoch ?: scheduledTimeEpoch
                 val effEnd = PrayerDateTimeUtils.calculateEffectiveEndTime(scheduledTimeEpoch, endTimeEpoch)
                 when {
+                    doneAt < scheduledTimeEpoch -> "Sebelum Waktu Masuk"
                     doneAt <= scheduledTimeEpoch + EARLY_WINDOW_MS -> "Tepat Waktu (Awal Waktu)"
                     doneAt <= effEnd - LATE_WINDOW_MS -> "Tepat Waktu"
-                    doneAt <= effEnd -> "Tepat Waktu (Akhir Waktu)"
+                    doneAt <= effEnd -> "Akhir Waktu"
                     else -> "Qadha Selesai"
                 }
             }
@@ -55,6 +56,11 @@ object PrayerStatusResolver {
     /**
      * Formula dinamis Google Sheets untuk Kolom H (Keterangan):
      * Menggunakan LET() yang membandingkan Tanggal (B), Jadwal Masuk (D), Batas Akhir (E), dan Jam Selesai (F).
+     * - done < sched -> "Sebelum Waktu Masuk" (Orange / Warning)
+     * - done <= sched + 30m -> "Tepat Waktu (Awal Waktu)" (Green)
+     * - done <= deadline - 15m -> "Tepat Waktu" (Green)
+     * - done <= deadline -> "Akhir Waktu" (Orange / Mepet)
+     * - done > deadline -> "Qadha Selesai" (Orange)
      */
     fun buildGoogleSheetsKeteranganFormula(row: Int, sep: String, s: String = "$"): String {
         return "=LET(" +
@@ -67,7 +73,8 @@ object PrayerStatusResolver {
             "IF(OR(${s}F$row=\"\"$sep ${s}F$row=\"-\")$sep " +
             "IF(NOW() > deadline$sep \"Terlewat (Belum Qadha)\"$sep \"Belum Salat\")$sep " +
             "IF(OR(ISNUMBER(SEARCH(\"Qadha\"$sep \"\" & ${s}F$row))$sep done > deadline)$sep \"Qadha Selesai\"$sep " +
+            "IF(done < sched$sep \"Sebelum Waktu Masuk\"$sep " +
             "IF(done <= sched + (30/1440)$sep \"Tepat Waktu (Awal Waktu)\"$sep " +
-            "IF(done <= deadline - (15/1440)$sep \"Tepat Waktu\"$sep \"Tepat Waktu (Akhir Waktu)\")))))"
+            "IF(done <= deadline - (15/1440)$sep \"Tepat Waktu\"$sep \"Akhir Waktu\"))))))"
     }
 }

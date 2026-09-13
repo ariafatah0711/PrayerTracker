@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import com.prayertracker.app.PrayerTrackerApp
+import com.prayertracker.app.scheduler.PrayerAlarmScheduler
 import com.prayertracker.app.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -61,6 +62,10 @@ class PrayerAlarmDialogActivity : ComponentActivity() {
         const val EXTRA_ALERT_TYPE = "extra_alert_type" // ENTRY, OTW, SNOOZE
         const val ACTION_DISMISS_OVERLAY = "com.prayertracker.app.ACTION_DISMISS_OVERLAY"
 
+        @Volatile
+        var isOverlayShowing: Boolean = false
+            private set
+
         fun createIntent(
             context: Context,
             prayerId: String,
@@ -71,9 +76,9 @@ class PrayerAlarmDialogActivity : ComponentActivity() {
         ): Intent {
             return Intent(context, PrayerAlarmDialogActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
-                        Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS or
-                        Intent.FLAG_ACTIVITY_NO_HISTORY
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                        Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
                 putExtra(EXTRA_PRAYER_ID, prayerId)
                 putExtra(EXTRA_PRAYER_NAME, prayerName)
                 putExtra(EXTRA_TIME_FORMATTED, timeFormatted)
@@ -97,6 +102,7 @@ class PrayerAlarmDialogActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        isOverlayShowing = true
 
         // Daftarkan listener penutup otomatis jika user merespon langsung dari banner notifikasi atas
         val filter = android.content.IntentFilter(ACTION_DISMISS_OVERLAY)
@@ -126,12 +132,13 @@ class PrayerAlarmDialogActivity : ComponentActivity() {
         val alertType = intent.getStringExtra(EXTRA_ALERT_TYPE) ?: "ENTRY"
 
         // Auto-dismiss timeout (45 detik):
-        // Jika HP tergeletak di meja atau di kantong tanpa disentuh selama 45 detik,
-        // otomatis alihkan ke mode tunda dan biarkan layar mati kembali untuk hemat baterai.
+        // Jika HP tergeletak di meja tanpa disentuh selama 45 detik,
+        // matikan layar kembali untuk hemat baterai TANPA men-snooze 10 menit.
+        // Nanti saat user menyalakan layar kembali, dialog akan otomatis muncul kembali.
         autoDismissJob = lifecycleScope.launch {
             kotlinx.coroutines.delay(45000)
             if (!isFinishing && !isDestroyed) {
-                handleNo(prayerId, prayerName, notificationId)
+                handleAutoSleep()
             }
         }
 
@@ -154,44 +161,50 @@ class PrayerAlarmDialogActivity : ComponentActivity() {
         }
     }
 
-    override fun onUserLeaveHint() {
-        super.onUserLeaveHint()
-        // Saat user menekan tombol Home atau swipe keluar layar,
-        // otomatis alihkan ke mode tunda (BELUM) sehingga notifikasi standby nempel di status bar
+    private fun handleAutoSleep() {
         autoDismissJob?.cancel()
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        val prayerId = intent.getStringExtra(EXTRA_PRAYER_ID) ?: ""
-        val prayerName = intent.getStringExtra(EXTRA_PRAYER_NAME) ?: "Salat"
-        val notificationId = intent.getIntExtra(EXTRA_NOTIFICATION_ID, 1001)
-        handleNo(prayerId, prayerName, notificationId)
+        if (!isFinishing) {
+            finish()
+        }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        // Saat user menekan tombol Home atau gesture swipe keluar layar secara sengaja:
+        // Tutup dialog sementara agar pengguna tidak terblokir untuk kebutuhan mendesak di HP,
+        // TAPI JANGAN panggil handleNo() (tidak ada auto-snooze diam-diam).
+        // Pengingat tetap standby di status bar, dan saat layar dimatikan & dinyalakan kembali,
+        // dialog akan otomatis muncul kembali karena belum ada tombol yang dipilih.
+        autoDismissJob?.cancel()
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if (!isFinishing) {
+            finish()
+        }
     }
 
     override fun onStop() {
         super.onStop()
-        // Jika overlay terdorong ke background (misal user buka aplikasi lain atau swipe keluar),
-        // pastikan activity langsung di-finish agar tidak ada window transparan yang mengunci status bar / control center HP
+        autoDismissJob?.cancel()
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Cukup tutup Activity agar hemat daya dan tidak menggantung di memori,
+        // TANPA memicu handleNo() atau snooze otomatis.
         if (!isFinishing) {
-            autoDismissJob?.cancel()
-            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            val prayerId = intent.getStringExtra(EXTRA_PRAYER_ID) ?: ""
-            val prayerName = intent.getStringExtra(EXTRA_PRAYER_NAME) ?: "Salat"
-            val notificationId = intent.getIntExtra(EXTRA_NOTIFICATION_ID, 1001)
-            handleNo(prayerId, prayerName, notificationId)
+            finish()
         }
     }
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        // Tombol back HP otomatis men-snooze dan mensinkronkan notifikasi, tidak keluar tanpa konfirmasi
-        val prayerId = intent.getStringExtra(EXTRA_PRAYER_ID) ?: ""
-        val prayerName = intent.getStringExtra(EXTRA_PRAYER_NAME) ?: "Salat"
-        val notificationId = intent.getIntExtra(EXTRA_NOTIFICATION_ID, 1001)
-        handleNo(prayerId, prayerName, notificationId)
+        // Kunci tombol Back agar pengguna tidak menutup dialog secara tidak sengaja.
+        // Pengguna diarahkan untuk memilih salah satu tombol respons secara sadar.
+        Toast.makeText(this, "Silakan pilih: Sudah, OTW, atau Belum", Toast.LENGTH_SHORT).show()
     }
 
     private fun handleYes(prayerId: String, notificationId: Int) {
         autoDismissJob?.cancel()
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        PrayerAlarmScheduler.clearExplicitSnooze()
         val app = applicationContext as PrayerTrackerApp
         app.notificationHelper.cancelNotification(notificationId)
         app.alarmScheduler.cancelAllAlarmsForPrayer(notificationId)
@@ -219,6 +232,7 @@ class PrayerAlarmDialogActivity : ComponentActivity() {
         if (prayerId.startsWith("test_")) {
             lifecycleScope.launch(Dispatchers.IO) {
                 val settings = app.settingsRepository.settingsFlow.first()
+                PrayerAlarmScheduler.setExplicitSnooze(settings.otwIntervalMinutes)
                 app.notificationHelper.showStandbyNotification(
                     prayerName = prayerName,
                     notificationId = notificationId,
@@ -241,8 +255,9 @@ class PrayerAlarmDialogActivity : ComponentActivity() {
         }
 
         lifecycleScope.launch(Dispatchers.IO) {
-            app.repository.processOtw(prayerId)
             val settings = app.settingsRepository.settingsFlow.first()
+            PrayerAlarmScheduler.setExplicitSnooze(settings.otwIntervalMinutes)
+            app.repository.processOtw(prayerId)
             // Replace alarm notification with quiet standby notification
             app.notificationHelper.showStandbyNotification(
                 prayerName = prayerName,
@@ -271,6 +286,7 @@ class PrayerAlarmDialogActivity : ComponentActivity() {
         if (prayerId.startsWith("test_")) {
             lifecycleScope.launch(Dispatchers.IO) {
                 val settings = app.settingsRepository.settingsFlow.first()
+                PrayerAlarmScheduler.setExplicitSnooze(settings.noSnoozeIntervalMinutes)
                 app.notificationHelper.showStandbyNotification(
                     prayerName = prayerName,
                     notificationId = notificationId,
@@ -293,8 +309,9 @@ class PrayerAlarmDialogActivity : ComponentActivity() {
         }
 
         lifecycleScope.launch(Dispatchers.IO) {
-            app.repository.processNo(prayerId)
             val settings = app.settingsRepository.settingsFlow.first()
+            PrayerAlarmScheduler.setExplicitSnooze(settings.noSnoozeIntervalMinutes)
+            app.repository.processNo(prayerId)
             // Replace alarm notification with quiet standby notification
             app.notificationHelper.showStandbyNotification(
                 prayerName = prayerName,
@@ -317,6 +334,7 @@ class PrayerAlarmDialogActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        isOverlayShowing = false
         autoDismissJob?.cancel()
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         try {

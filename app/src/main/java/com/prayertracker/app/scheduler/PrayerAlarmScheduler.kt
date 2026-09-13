@@ -26,6 +26,21 @@ class PrayerAlarmScheduler(private val context: Context) {
         fun getNotificationId(order: Int): Int = BASE_NOTIFICATION_ID + order
         fun getOtwRequestCode(notificationId: Int): Int = notificationId + OTW_OFFSET
         fun getSnoozeRequestCode(notificationId: Int): Int = notificationId + SNOOZE_OFFSET
+
+        @Volatile
+        var explicitSnoozedUntilEpoch: Long = 0L
+
+        fun setExplicitSnooze(durationMinutes: Int) {
+            explicitSnoozedUntilEpoch = System.currentTimeMillis() + (durationMinutes * 60 * 1000L)
+        }
+
+        fun clearExplicitSnooze() {
+            explicitSnoozedUntilEpoch = 0L
+        }
+
+        fun isExplicitlySnoozed(): Boolean {
+            return System.currentTimeMillis() < explicitSnoozedUntilEpoch
+        }
     }
 
     fun schedulePrayerEntry(
