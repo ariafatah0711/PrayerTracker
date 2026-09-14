@@ -102,7 +102,9 @@ class GoogleSheetsFormulaFactory(private val separator: String) {
     private fun recapPrayerColumn(prayerName: String): String = """
         BYROW(uniqueDates$separator LAMBDA(d$separator LET(
           done$separator COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$separator d$separator 'Data Mentah'!${s}C${s}2:${s}C${s}1000$separator "$prayerName"$separator 'Data Mentah'!${s}G${s}2:${s}G${s}1000$separator "Sudah*"$separator 'Data Mentah'!${s}F${s}2:${s}F${s}1000$separator "<>")$separator
-          tm$separator IF(done=0$separator ""$separator TEXT(INDEX(FILTER('Data Mentah'!${s}F${s}2:${s}F${s}1000$separator ('Data Mentah'!${s}B${s}2:${s}B${s}1000=d)*('Data Mentah'!${s}C${s}2:${s}C${s}1000="$prayerName"))$separator 1)$separator "HH:mm"))$separator
+          completedRaw$separator IF(done=0$separator ""$separator INDEX(FILTER('Data Mentah'!${s}F${s}2:${s}F${s}1000$separator ('Data Mentah'!${s}B${s}2:${s}B${s}1000=d)*('Data Mentah'!${s}C${s}2:${s}C${s}1000="$prayerName"))$separator 1))$separator
+          completedAt$separator IF(ISNUMBER(completedRaw)$separator IF(completedRaw<1$separator d+completedRaw$separator completedRaw)$separator IFERROR(DATEVALUE(LEFT(completedRaw$separator 10))+TIMEVALUE(RIGHT(completedRaw$separator 5))$separator IFERROR(DATEVALUE(completedRaw)+TIMEVALUE(completedRaw)$separator 0)))$separator
+          tm$separator IF(done=0$separator ""$separator IF(INT(completedAt)=INT(d)$separator TEXT(completedAt$separator "HH:mm")$separator TEXT(completedAt$separator "d MMMM yyyy")))$separator
           qd$separator IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$separator d$separator 'Data Mentah'!${s}C${s}2:${s}C${s}1000$separator "$prayerName"$separator 'Data Mentah'!${s}H${s}2:${s}H${s}1000$separator "*Qadha*")>0$separator " (Qadha)"$separator "")$separator
           IF(done>0$separator tm&qd$separator "Belum")
         )))

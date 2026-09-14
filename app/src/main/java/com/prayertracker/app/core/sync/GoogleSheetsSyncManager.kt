@@ -1324,7 +1324,7 @@ class GoogleSheetsSyncManager(
                 batchRequests.put(createDateFormatRequest(sId, 0))
                 batchRequests.put(createColumnWidthRequest(sId, 0, 140))
                 for (col in 1..5) {
-                    batchRequests.put(createColumnWidthRequest(sId, col, 120)) // Kolom jam + keterangan Qadha diperlebar
+                    batchRequests.put(createColumnWidthRequest(sId, col, 180)) // Muat tanggal qadha, mis. "14 September 2026 (Qadha)"
                     batchRequests.put(createTextFormatRequest(sId, col))
                 }
                 batchRequests.put(createColumnWidthRequest(sId, 6, 65)) // Muat "5/5"

@@ -27,6 +27,15 @@ class GoogleSheetsFormulaFactoryTest {
         assertFalse(formula.contains("; 35;"))
     }
 
+    @Test
+    fun `time recap shows only time on the prayer date and completion date for later qadha`() {
+        val formula = GoogleSheetsFormulaFactory(";").timeRecap()
+
+        assertTrue(formula.contains("IF(INT(completedAt)=INT(d); TEXT(completedAt; \"HH:mm\"); TEXT(completedAt; \"d MMMM yyyy\"))"))
+        assertTrue(formula.contains("\" (Qadha)\""))
+        assertTrue(hasBalancedParentheses(formula))
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun `factory rejects unsupported separator`() {
         GoogleSheetsFormulaFactory("|")
