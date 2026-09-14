@@ -358,74 +358,18 @@ class GoogleSheetsSyncManager(
                 pullDataFromSheetsInternal(token, spreadsheetId)
             }
 
-            // -----------------------------------------------------------------
-            // Definisi Header Ketiga Sheet
-            // -----------------------------------------------------------------
-            val ringkasanHeader = JSONArray().apply {
-                put("Tanggal")
-                put("Subuh")
-                put("Dzuhur")
-                put("Ashar")
-                put("Maghrib")
-                put("Isya")
-                put("Selesai")
-            }
-            val rekapWaktuHeader = JSONArray().apply {
-                put("Tanggal")
-                put("Subuh")
-                put("Dzuhur")
-                put("Ashar")
-                put("Maghrib")
-                put("Isya")
-                put("Selesai")
-            }
-            val rawHeader = JSONArray().apply {
-                put("ID")
-                put("Tanggal")
-                put("Salat")
-                put("Jadwal Masuk")
-                put("Batas Akhir")
-                put("Jam Selesai")
-                put("Status Ibadah")
-                put("Keterangan")
-            }
+            // Skema, formula, dan jaringan dipisah agar sinkronisasi tidak lagi
+            // menyimpan definisi spreadsheet sepanjang ratusan baris di kelas ini.
+            val ringkasanHeader = GoogleSheetsSheetSchema.dailyHeader()
+            val rekapWaktuHeader = GoogleSheetsSheetSchema.timeRecapHeader()
+            val rawHeader = GoogleSheetsSheetSchema.rawDataHeader()
 
             // Urutkan tanggal secara menurun (hari ini paling atas)
             // 3. Ambil seluruh data ibadah dari database lokal (termasuk hasil rekonsiliasi terbaru)
             val allPrayers = database.prayerRecordDao().getAllPrayers()
             val dates = allPrayers.map { it.prayerDate }.distinct().sortedDescending()
-            val s = "$"
-
-            // -----------------------------------------------------------------
-            // Definitions for Weekly Summary Headers (Required by both empty and full sync)
-            // -----------------------------------------------------------------
-            val h1 = JSONArray().apply {
-                put("Bulan")
-                put("Minggu")
-                put("Rentang Tanggal")
-                val days = listOf("Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu")
-                days.forEach { dayName ->
-                    put(dayName)
-                    put("")
-                    put("")
-                    put("")
-                    put("")
-                }
-                put("Selesai")
-            }
-            val h2 = JSONArray().apply {
-                put("")
-                put("")
-                put("")
-                for (i in 0..6) {
-                    put("S")
-                    put("D")
-                    put("A")
-                    put("M")
-                    put("I")
-                }
-                put("Target: 35")
-            }
+            val (h1, h2) = GoogleSheetsSheetSchema.weeklyHeaderRows()
+            val formulas = GoogleSheetsFormulaFactory(sep)
 
             // 3. Ambil seluruh data ibadah dari database lokal (termasuk hasil rekonsiliasi terbaru)
             if (allPrayers.isEmpty()) {
@@ -472,22 +416,7 @@ class GoogleSheetsSyncManager(
             // SHEET 1: "Ringkasan Harian" (Overview Dinamis Terhubung ke Data Mentah)
             // Satu formula spill di A2 membentuk seluruh tabel ringkasan harian.
             // -----------------------------------------------------------------
-            val ringkasanFormula = """
-                =IFERROR(LET(
-                  rawDates$sep 'Data Mentah'!${s}B${s}2:${s}B${s}1000$sep
-                  normalizedDates$sep ARRAYFORMULA(IF(ISNUMBER(rawDates)$sep rawDates$sep IFERROR(DATEVALUE(rawDates)$sep 0)))$sep
-                  uniqueDates$sep SORT(UNIQUE(FILTER(normalizedDates$sep normalizedDates>0))$sep 1$sep FALSE)$sep
-                  HSTACK(
-                    ARRAYFORMULA(TEXT(uniqueDates$sep "d MMMM yyyy"))$sep
-                    ARRAYFORMULA(IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Subuh"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep "Sudah"$sep "Belum"))$sep
-                    ARRAYFORMULA(IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Dzuhur"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep "Sudah"$sep "Belum"))$sep
-                    ARRAYFORMULA(IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Ashar"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep "Sudah"$sep "Belum"))$sep
-                    ARRAYFORMULA(IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Maghrib"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep "Sudah"$sep "Belum"))$sep
-                    ARRAYFORMULA(IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Isya"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep "Sudah"$sep "Belum"))$sep
-                    ARRAYFORMULA(IF(uniqueDates=""$sep ""$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")&"/5"))
-                  )
-                )$sep "")
-            """.trimIndent().replace("\n", "")
+            val ringkasanFormula = formulas.dailySummary()
             val ringkasanRows = JSONArray().apply {
                 put(ringkasanHeader)
                 put(JSONArray().apply { put(ringkasanFormula); repeat(6) { put("") } })
@@ -503,29 +432,7 @@ class GoogleSheetsSyncManager(
             // Satu formula spill di A3 membentuk seluruh matriks mingguan. Berbeda
             // dari versi 104 x 39 formula, tanggal atau minggu baru di Data Mentah
             // langsung muncul otomatis tanpa perlu sync dan tanpa beban ribuan formula.
-            val weeklySpillFormula = """
-                =IFERROR(LET(
-                  rawDates$sep 'Data Mentah'!${s}B${s}2:${s}B${s}1000$sep
-                  normalizedDates$sep ARRAYFORMULA(IF(ISNUMBER(rawDates)$sep INT(rawDates)$sep IFERROR(DATEVALUE(rawDates)$sep 0)))$sep
-                  weekStarts$sep SORT(UNIQUE(FILTER(normalizedDates-WEEKDAY(normalizedDates$sep 2)+1$sep normalizedDates>0))$sep 1$sep FALSE)$sep
-                  checks$sep MAKEARRAY(ROWS(weekStarts)$sep 35$sep LAMBDA(rowIndex$sep columnIndex$sep LET(
-                    targetDate$sep INDEX(weekStarts$sep rowIndex)+INT((columnIndex-1)/5)$sep
-                    prayerName$sep INDEX({"Subuh"$sep "Dzuhur"$sep "Ashar"$sep "Maghrib"$sep "Isya"}$sep MOD(columnIndex-1$sep 5)+1)$sep
-                    IF(targetDate>TODAY()$sep ""$sep IF(COUNTIFS(normalizedDates$sep targetDate$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep prayerName$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*")>0$sep "✓"$sep "-"))
-                  )))$sep
-                  totals$sep BYROW(checks$sep LAMBDA(checkRow$sep LET(
-                    completed$sep COUNTIF(checkRow$sep "✓")$sep
-                    active$sep completed+COUNTIF(checkRow$sep "-")$sep
-                    IF(active=0$sep "-"$sep completed&"/"&active&" ("&TEXT(completed/active$sep "0%")&")")
-                  )))$sep
-                  HSTACK(
-                    ARRAYFORMULA(TEXT(weekStarts$sep "mmmm yyyy"))$sep
-                    ARRAYFORMULA("Minggu "&IFERROR(INT((weekStarts - (DATE(YEAR(weekStarts)$sep MONTH(weekStarts)$sep 1) + MOD(1 - WEEKDAY(DATE(YEAR(weekStarts)$sep MONTH(weekStarts)$sep 1)$sep 2)$sep 7))) / 7) + 1)$sep "1"))$sep
-                    ARRAYFORMULA(TEXT(weekStarts$sep "d MMM")&" - "&TEXT(weekStarts+6$sep "d MMM"))$sep
-                    checks$sep totals
-                  )
-                )$sep "")
-            """.trimIndent().replace("\n", "")
+            val weeklySpillFormula = formulas.weeklySummary()
             val weeklyFormulaRow = JSONArray().apply {
                 put(weeklySpillFormula)
                 repeat(38) { put("") }
@@ -537,47 +444,7 @@ class GoogleSheetsSyncManager(
             // Satu formula spill di A2 membentuk seluruh tabel rekap waktu.
             // Pakai BYROW supaya FILTER per-baris aman (gak meledak di ARRAYFORMULA).
             // -----------------------------------------------------------------
-            val rekapWaktuFormula = """
-                =IFERROR(LET(
-                  rawDates$sep 'Data Mentah'!${s}B${s}2:${s}B${s}1000$sep
-                  normalizedDates$sep ARRAYFORMULA(IF(ISNUMBER(rawDates)$sep rawDates$sep IFERROR(DATEVALUE(rawDates)$sep 0)))$sep
-                  uniqueDates$sep SORT(UNIQUE(FILTER(normalizedDates$sep normalizedDates>0))$sep 1$sep FALSE)$sep
-                  HSTACK(
-                    ARRAYFORMULA(TEXT(uniqueDates$sep "d MMMM yyyy"))$sep
-                    BYROW(uniqueDates$sep LAMBDA(d$sep LET(
-                      done$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Subuh"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")$sep
-                      tm$sep IF(done=0$sep ""$sep TEXT(INDEX(FILTER('Data Mentah'!${s}F${s}2:${s}F${s}1000$sep ('Data Mentah'!${s}B${s}2:${s}B${s}1000=d)*('Data Mentah'!${s}C${s}2:${s}C${s}1000="Subuh"))$sep 1)$sep "HH:mm"))$sep
-                      qd$sep IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Subuh"$sep 'Data Mentah'!${s}H${s}2:${s}H${s}1000$sep "*Qadha*")>0$sep " (Qadha)"$sep "")$sep
-                      IF(done>0$sep tm&qd$sep "Belum")
-                    )))$sep
-                    BYROW(uniqueDates$sep LAMBDA(d$sep LET(
-                      done$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Dzuhur"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")$sep
-                      tm$sep IF(done=0$sep ""$sep TEXT(INDEX(FILTER('Data Mentah'!${s}F${s}2:${s}F${s}1000$sep ('Data Mentah'!${s}B${s}2:${s}B${s}1000=d)*('Data Mentah'!${s}C${s}2:${s}C${s}1000="Dzuhur"))$sep 1)$sep "HH:mm"))$sep
-                      qd$sep IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Dzuhur"$sep 'Data Mentah'!${s}H${s}2:${s}H${s}1000$sep "*Qadha*")>0$sep " (Qadha)"$sep "")$sep
-                      IF(done>0$sep tm&qd$sep "Belum")
-                    )))$sep
-                    BYROW(uniqueDates$sep LAMBDA(d$sep LET(
-                      done$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Ashar"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")$sep
-                      tm$sep IF(done=0$sep ""$sep TEXT(INDEX(FILTER('Data Mentah'!${s}F${s}2:${s}F${s}1000$sep ('Data Mentah'!${s}B${s}2:${s}B${s}1000=d)*('Data Mentah'!${s}C${s}2:${s}C${s}1000="Ashar"))$sep 1)$sep "HH:mm"))$sep
-                      qd$sep IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Ashar"$sep 'Data Mentah'!${s}H${s}2:${s}H${s}1000$sep "*Qadha*")>0$sep " (Qadha)"$sep "")$sep
-                      IF(done>0$sep tm&qd$sep "Belum")
-                    )))$sep
-                    BYROW(uniqueDates$sep LAMBDA(d$sep LET(
-                      done$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Maghrib"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")$sep
-                      tm$sep IF(done=0$sep ""$sep TEXT(INDEX(FILTER('Data Mentah'!${s}F${s}2:${s}F${s}1000$sep ('Data Mentah'!${s}B${s}2:${s}B${s}1000=d)*('Data Mentah'!${s}C${s}2:${s}C${s}1000="Maghrib"))$sep 1)$sep "HH:mm"))$sep
-                      qd$sep IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Maghrib"$sep 'Data Mentah'!${s}H${s}2:${s}H${s}1000$sep "*Qadha*")>0$sep " (Qadha)"$sep "")$sep
-                      IF(done>0$sep tm&qd$sep "Belum")
-                    )))$sep
-                    BYROW(uniqueDates$sep LAMBDA(d$sep LET(
-                      done$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Isya"$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")$sep
-                      tm$sep IF(done=0$sep ""$sep TEXT(INDEX(FILTER('Data Mentah'!${s}F${s}2:${s}F${s}1000$sep ('Data Mentah'!${s}B${s}2:${s}B${s}1000=d)*('Data Mentah'!${s}C${s}2:${s}C${s}1000="Isya"))$sep 1)$sep "HH:mm"))$sep
-                      qd$sep IF(COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep d$sep 'Data Mentah'!${s}C${s}2:${s}C${s}1000$sep "Isya"$sep 'Data Mentah'!${s}H${s}2:${s}H${s}1000$sep "*Qadha*")>0$sep " (Qadha)"$sep "")$sep
-                      IF(done>0$sep tm&qd$sep "Belum")
-                    )))$sep
-                    ARRAYFORMULA(IF(uniqueDates=""$sep ""$sep COUNTIFS('Data Mentah'!${s}B${s}2:${s}B${s}1000$sep uniqueDates$sep 'Data Mentah'!${s}G${s}2:${s}G${s}1000$sep "Sudah*"$sep 'Data Mentah'!${s}F${s}2:${s}F${s}1000$sep "<>-")&"/5"))
-                  )
-                )$sep "")
-            """.trimIndent().replace("\n", "")
+            val rekapWaktuFormula = formulas.timeRecap()
             val rekapWaktuRows = JSONArray().apply {
                 put(rekapWaktuHeader)
                 put(JSONArray().apply { put(rekapWaktuFormula); repeat(6) { put("") } })
@@ -609,17 +476,8 @@ class GoogleSheetsSyncManager(
 
             // Array formula untuk Kolom G (Status Ibadah) & H (Keterangan)
             // Ditulis terpisah ke G2:H2 setelah data A:F
-            val rawStatusFormula = "=ARRAYFORMULA(IF(B2:B1000=\"\"$sep \"\"$sep IF(F2:F1000=\"\"$sep \"\"$sep IF(F2:F1000=\"-\"$sep \"Belum\"$sep \"Sudah\"))))"
-            val doneExpr = "IF(ISNUMBER(F2:F1000)$sep IF(F2:F1000<1$sep B2:B1000+F2:F1000$sep F2:F1000)$sep IFERROR(DATEVALUE(LEFT(F2:F1000$sep 10))+TIMEVALUE(RIGHT(F2:F1000$sep 5))$sep IFERROR(DATEVALUE(F2:F1000)+TIMEVALUE(F2:F1000)$sep 0)))"
-            val schedExpr = "B2:B1000+D2:D1000"
-            val deadlineExpr = "B2:B1000+E2:E1000+IF(E2:E1000<D2:D1000$sep 1$sep 0)+0*NOW()"
-            val rawKeteranganFormula = "=ARRAYFORMULA(IF(B2:B1000=\"\"$sep \"\"$sep " +
-                "IF((F2:F1000=\"\")+(F2:F1000=\"-\")$sep " +
-                "IF(NOW()>$deadlineExpr$sep \"Terlewat (Belum Qadha)\"$sep \"Belum Salat\")$sep " +
-                "IF(ISNUMBER(SEARCH(\"Qadha\"$sep \"\"&F2:F1000))+($doneExpr>$deadlineExpr)$sep \"Qadha Selesai\"$sep " +
-                "IF($doneExpr<$schedExpr$sep \"Sebelum Waktu Masuk\"$sep " +
-                "IF($doneExpr<=$schedExpr+(30/1440)$sep \"Tepat Waktu (Awal Waktu)\"$sep " +
-                "IF($doneExpr<=$deadlineExpr-(15/1440)$sep \"Tepat Waktu\"$sep \"Akhir Waktu\")))))))"
+            val rawStatusFormula = formulas.rawStatus()
+            val rawKeteranganFormula = formulas.rawDescription()
 
             // 4. Batch Clear area sheet terlebih dahulu agar tidak ada data lama yang tersisa (dipangkas sesuai kolom aktif)
             try {
@@ -697,6 +555,15 @@ class GoogleSheetsSyncManager(
                 }
             }
 
+            // Sheets API dapat menjawab HTTP 200 meskipun formula USER_ENTERED
+            // berubah menjadi #ERROR!. Validasi A3 lalu coba separator alternatif
+            // sekali agar locale spreadsheet lama tidak membuat sync tampak sukses.
+            if (!verifyOrRepairWeeklyFormula(token, spreadsheetId, sep)) {
+                return@withContext Result.failure(
+                    IllegalStateException("Formula Ringkasan Mingguan tidak dapat diproses oleh Google Sheets. Periksa locale spreadsheet.")
+                )
+            }
+
             // Header mingguan digabung setelah seluruh nilai header berhasil ditulis.
             // Dipisah dari conditional formatting agar layout tetap selalu diterapkan.
             applyWeeklyHeaderLayout(token, spreadsheetId)
@@ -721,6 +588,70 @@ class GoogleSheetsSyncManager(
             Result.failure(e)
         }
     }
+
+    /**
+     * Memastikan A3 tidak menjadi #ERROR! setelah formula dikirim. Bila pemisah
+     * dari locale lama keliru, formula dicoba ulang sekali dengan pemisah lain.
+     */
+    private fun verifyOrRepairWeeklyFormula(token: String, spreadsheetId: String, separator: String): Boolean {
+        val firstAttempt = readWeeklyFormulaState(token, spreadsheetId)
+        if (firstAttempt != WeeklyFormulaState.ERROR) return true
+
+        val fallbackSeparator = if (separator == ";") "," else ";"
+        val fallbackFormula = GoogleSheetsFormulaFactory(fallbackSeparator).weeklySummary()
+        writeWeeklyFormula(token, spreadsheetId, fallbackFormula)
+        return readWeeklyFormulaState(token, spreadsheetId) != WeeklyFormulaState.ERROR
+    }
+
+    private fun readWeeklyFormulaState(token: String, spreadsheetId: String): WeeklyFormulaState {
+        return try {
+            val range = java.net.URLEncoder.encode("'${GoogleSheetsSheetSchema.WEEKLY}'!A3", "UTF-8")
+            val request = Request.Builder()
+                .url("$SHEETS_API_BASE/$spreadsheetId/values/$range?valueRenderOption=FORMATTED_VALUE")
+                .addHeader("Authorization", "Bearer $token")
+                .get()
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    WeeklyFormulaState.UNKNOWN
+                } else {
+                    val values = JSONObject(response.body?.string() ?: "{}").optJSONArray("values")
+                    val value = values?.optJSONArray(0)?.optString(0).orEmpty()
+                    if (value.startsWith("#") || value.contains("Formula parse error", ignoreCase = true)) {
+                        WeeklyFormulaState.ERROR
+                    } else {
+                        WeeklyFormulaState.HEALTHY
+                    }
+                }
+            }
+        } catch (exception: Exception) {
+            android.util.Log.w("GoogleSheetsSync", "Tidak dapat memverifikasi formula mingguan", exception)
+            WeeklyFormulaState.UNKNOWN
+        }
+    }
+
+    private fun writeWeeklyFormula(token: String, spreadsheetId: String, formula: String) {
+        val payload = JSONObject().apply {
+            put("valueInputOption", "USER_ENTERED")
+            put("data", JSONArray().put(JSONObject().apply {
+                put("range", "'${GoogleSheetsSheetSchema.WEEKLY}'!A3")
+                put("majorDimension", "ROWS")
+                put("values", JSONArray().put(JSONArray().put(formula)))
+            }))
+        }
+        val request = Request.Builder()
+            .url("$SHEETS_API_BASE/$spreadsheetId/values:batchUpdate")
+            .addHeader("Authorization", "Bearer $token")
+            .post(payload.toString().toRequestBody(jsonMediaType))
+            .build()
+        httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                android.util.Log.w("GoogleSheetsSync", "Formula mingguan fallback ditolak (${response.code})")
+            }
+        }
+    }
+
+    private enum class WeeklyFormulaState { HEALTHY, ERROR, UNKNOWN }
 
     private suspend fun findOrCreateSpreadsheet(token: String): String {
         // 0. Prioritaskan spreadsheet yang URL-nya sudah tercatat di aplikasi jika masih valid
@@ -788,6 +719,10 @@ class GoogleSheetsSyncManager(
         val createPayload = JSONObject().apply {
             put("properties", JSONObject().apply {
                 put("title", SPREADSHEET_TITLE)
+                // Spreadsheet baru milik aplikasi selalu memakai locale yang sama
+                // dengan formula bawaan; sheet lama tetap ditangani fallback A3.
+                put("locale", "id_ID")
+                put("timeZone", "Asia/Jakarta")
             })
         }
 
