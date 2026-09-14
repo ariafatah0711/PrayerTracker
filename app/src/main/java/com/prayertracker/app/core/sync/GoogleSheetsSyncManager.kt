@@ -14,7 +14,9 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.DayOfWeek
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import com.prayertracker.app.core.datastore.AppSettingsRepository
 import com.prayertracker.app.core.util.PrayerDateTimeUtils
@@ -368,6 +370,13 @@ class GoogleSheetsSyncManager(
             // 3. Ambil seluruh data ibadah dari database lokal (termasuk hasil rekonsiliasi terbaru)
             val allPrayers = database.prayerRecordDao().getAllPrayers()
             val dates = allPrayers.map { it.prayerDate }.distinct().sortedDescending()
+            // Formula ringkasan melakukan spill, tetapi payload hanya berisi satu
+            // sel formula. Hitung jumlah baris hasil agar styling tidak berhenti
+            // di A2/A3 saja.
+            val dailySummaryRowCount = dates.size + 1 // header + satu baris per tanggal
+            val weeklySummaryRowCount = dates.mapNotNull { rawDate ->
+                runCatching { LocalDate.parse(rawDate).with(DayOfWeek.MONDAY) }.getOrNull()
+            }.distinct().size + 2 // dua header + satu baris per minggu
             val (h1, h2) = GoogleSheetsSheetSchema.weeklyHeaderRows()
             val formulas = GoogleSheetsFormulaFactory(sep)
 
@@ -572,9 +581,9 @@ class GoogleSheetsSyncManager(
             applyCellStylingAndAlignments(
                 token = token,
                 spreadsheetId = spreadsheetId,
-                ringkasanRowCount = ringkasanRows.length(),
-                mingguanRowCount = mingguanRows.length(),
-                rekapWaktuRowCount = rekapWaktuRows.length(),
+                ringkasanRowCount = dailySummaryRowCount,
+                mingguanRowCount = weeklySummaryRowCount,
+                rekapWaktuRowCount = dailySummaryRowCount,
                 rawRowCount = rawRows.length()
             )
 
@@ -944,6 +953,7 @@ class GoogleSheetsSyncManager(
             }
             val spreadsheetLocale = json.optJSONObject("properties")?.optString("locale", "id_ID") ?: "id_ID"
             sep = if (spreadsheetLocale.startsWith("en", ignoreCase = true)) "," else ";"
+            val checkMark = "\u2713"
             val sheetsArray = json.optJSONArray("sheets") ?: JSONArray()
 
             val existingTitles = mutableListOf<String>()
@@ -984,14 +994,18 @@ class GoogleSheetsSyncManager(
                 conditionalFormats: JSONArray?,
                 colIndex: Int,
                 conditionType: String,
-                conditionValue: String
+                conditionValue: String,
+                minimumEndRow: Int = 1000
             ): Boolean {
                 if (conditionalFormats == null) return false
                 for (idx in 0 until conditionalFormats.length()) {
                     val rule = conditionalFormats.optJSONObject(idx) ?: continue
                     val ranges = rule.optJSONArray("ranges") ?: continue
                     val appliesToColumn = (0 until ranges.length()).any { rangeIndex ->
-                        ranges.optJSONObject(rangeIndex)?.optInt("startColumnIndex", -1) == colIndex
+                        ranges.optJSONObject(rangeIndex)?.let { range ->
+                            range.optInt("startColumnIndex", -1) == colIndex &&
+                                range.optInt("endRowIndex", 0) >= minimumEndRow
+                        } == true
                     }
                     val condition = rule.optJSONObject("booleanRule")?.optJSONObject("condition") ?: continue
                     val hasExpectedValue = (0 until (condition.optJSONArray("values")?.length() ?: 0)).any { valueIndex ->
@@ -1046,9 +1060,9 @@ class GoogleSheetsSyncManager(
                 if (title == "Data Mentah") {
                     dataMentahSheetId = sheetId
                     dataMentahConditionalFormats = sheetObj.optJSONArray("conditionalFormats")
-                    // Data Mentah milik aplikasi hanya memakai lima rule warna.
+                    // Data Mentah milik aplikasi hanya memakai delapan rule warna.
                     // Bersihkan akumulasi rule duplikat dari versi lama sekali saja.
-                    if ((dataMentahConditionalFormats?.length() ?: 0) > 5) {
+                    if ((dataMentahConditionalFormats?.length() ?: 0) > 8) {
                         conditionalFormatNeedsRepair.add(sheetId)
                     }
                 }
@@ -1057,40 +1071,44 @@ class GoogleSheetsSyncManager(
             // Summary tabs are fully owned by the app. A legacy/duplicate rule can
             // keep a cell green even when the current total is 2/5, so validate the
             // complete rule set once and rebuild it if it differs from the expected set.
-            fun hasAllTotalRules(sheetId: Int, column: Int, formulas: List<String>): Boolean {
+            // CUSTOM_FORMULA ditolak oleh beberapa kombinasi spreadsheet/API Google,
+            // walaupun rumus yang sama valid saat diketik langsung di aplikasi Sheets.
+            // Total adalah teks, jadi gunakan kondisi teks bawaan API yang lebih stabil.
+            fun hasAllTotalRules(sheetId: Int, column: Int, tokens: List<String>): Boolean {
                 val rules = conditionalFormatsBySheet[sheetId]
-                return formulas.all { formula ->
-                    hasConditionalFormatRule(rules, column, "CUSTOM_FORMULA", formula)
+                return tokens.all { token ->
+                    hasConditionalFormatRule(rules, column, "TEXT_CONTAINS", token)
                 }
             }
 
+            // Prefix cukup untuk menangkap seluruh rentang: " (8" = 80--89%,
+            // " (9" = 90--99%, dan seterusnya. Jangan pakai " (80%)" karena
+            // nilai nyata seperti 83% atau 89% tidak akan cocok.
+            val greenPercentageTokens = listOf(" (8", " (9", " (100")
+            val yellowPercentageTokens = listOf(" (5", " (6", " (7")
+            val redPercentageTokens = listOf(" (0", " (1", " (2", " (3", " (4")
+            val allPercentageTokens = greenPercentageTokens + yellowPercentageTokens + redPercentageTokens
+            // Harian dan Rekap tidak menampilkan persen: "2/5", bukan "2/5 (40%)".
+            val greenCompletionTokens = listOf("4/5", "5/5")
+            val yellowCompletionTokens = listOf("3/5")
+            val redCompletionTokens = listOf("0/5", "1/5", "2/5")
+            val allCompletionTokens = greenCompletionTokens + yellowCompletionTokens + redCompletionTokens
+
             ringkasanHarianSheetId?.let { sheetId ->
-                ringkasanHarianHasTotalRules = hasAllTotalRules(sheetId, 6, listOf(
-                    "=COUNTIF(B2:F2, \"Sudah*\")/5 >= 0.8",
-                    "=COUNTIF(B2:F2, \"Sudah*\")/5 >= 0.5",
-                    "=AND(A2<>\"\", COUNTIF(B2:F2, \"Sudah*\")/5 < 0.5)"
-                ))
-                if (!ringkasanHarianHasTotalRules || (conditionalFormatCounts[sheetId] ?: 0) != 5) {
+                ringkasanHarianHasTotalRules = hasAllTotalRules(sheetId, 6, allCompletionTokens)
+                if (!ringkasanHarianHasTotalRules || (conditionalFormatCounts[sheetId] ?: 0) != 8) {
                     conditionalFormatNeedsRepair.add(sheetId)
                 }
             }
             ringkasanMingguanSheetId?.let { sheetId ->
-                ringkasanMingguanHasTotalRules = hasAllTotalRules(sheetId, 38, listOf(
-                    "=AND((COUNTIF(D3:AL3, \"✓\") + COUNTIF(D3:AL3, \"-\")) > 0, (COUNTIF(D3:AL3, \"✓\") / (COUNTIF(D3:AL3, \"✓\") + COUNTIF(D3:AL3, \"-\"))) >= 0.8)",
-                    "=AND((COUNTIF(D3:AL3, \"✓\") + COUNTIF(D3:AL3, \"-\")) > 0, (COUNTIF(D3:AL3, \"✓\") / (COUNTIF(D3:AL3, \"✓\") + COUNTIF(D3:AL3, \"-\"))) >= 0.5)",
-                    "=AND((COUNTIF(D3:AL3, \"✓\") + COUNTIF(D3:AL3, \"-\")) > 0, (COUNTIF(D3:AL3, \"✓\") / (COUNTIF(D3:AL3, \"✓\") + COUNTIF(D3:AL3, \"-\"))) < 0.5)"
-                ))
-                if (!ringkasanMingguanHasTotalRules || (conditionalFormatCounts[sheetId] ?: 0) != 5) {
+                ringkasanMingguanHasTotalRules = hasAllTotalRules(sheetId, 38, allPercentageTokens)
+                if (!ringkasanMingguanHasTotalRules || (conditionalFormatCounts[sheetId] ?: 0) != 13) {
                     conditionalFormatNeedsRepair.add(sheetId)
                 }
             }
             rekapWaktuSheetId?.let { sheetId ->
-                rekapWaktuHasTotalRules = hasAllTotalRules(sheetId, 6, listOf(
-                    "=COUNTIF(B2:F2, \"<>Belum\")/5 >= 0.8",
-                    "=COUNTIF(B2:F2, \"<>Belum\")/5 >= 0.5",
-                    "=AND(A2<>\"\", COUNTIF(B2:F2, \"<>Belum\")/5 < 0.5)"
-                ))
-                if (!rekapWaktuHasTotalRules || (conditionalFormatCounts[sheetId] ?: 0) != 6) {
+                rekapWaktuHasTotalRules = hasAllTotalRules(sheetId, 6, allCompletionTokens)
+                if (!rekapWaktuHasTotalRules || (conditionalFormatCounts[sheetId] ?: 0) != 9) {
                     conditionalFormatNeedsRepair.add(sheetId)
                 }
             }
@@ -1108,8 +1126,9 @@ class GoogleSheetsSyncManager(
                     if (!response.isSuccessful) {
                         val detail = response.body?.string() ?: ""
                         android.util.Log.e("GoogleSheetsSync", "Gagal menerapkan $label (${response.code}): $detail")
+                        throw IllegalStateException("Gagal menerapkan $label (${response.code}): $detail")
                     }
-                    response.isSuccessful
+                    true
                 }
             }
 
@@ -1120,10 +1139,6 @@ class GoogleSheetsSyncManager(
                 conditionalFormatCounts[sheetId] = index + 1
                 return index
             }
-
-            // Formula conditional-format API memakai sintaks koma, tidak mengikuti
-            // pemisah rumus USER_ENTERED pada locale spreadsheet.
-            fun apiConditionalFormula(formula: String): String = formula
 
             fun repairConditionalRulesOnce(sheetId: Int) {
                 repeat(conditionalFormatCounts[sheetId] ?: 0) {
@@ -1335,13 +1350,45 @@ class GoogleSheetsSyncManager(
 
             // Kirim struktur terlebih dahulu. Formula conditional-format yang bermasalah
             // tidak boleh membatalkan merge header atau perubahan lebar kolom.
-            submitFormattingBatch(batchRequests, "layout Google Sheet")
+            if (!submitFormattingBatch(batchRequests, "layout Google Sheet")) {
+                throw IllegalStateException("Google Sheets menolak pembaruan layout")
+            }
             while (batchRequests.length() > 0) batchRequests.remove(0)
 
             // 7. Conditional Formatting Warna Lembut pada "Ringkasan Harian" (Sudah: Hijau, Belum: Merah, Total: Skala Persen)
             listOfNotNull(ringkasanHarianSheetId, ringkasanMingguanSheetId, rekapWaktuSheetId, dataMentahSheetId)
                 .filter { it in conditionalFormatNeedsRepair }
                 .forEach(::repairConditionalRulesOnce)
+
+            fun addTotalTextRules(
+                sheetId: Int,
+                startRow: Int,
+                column: Int,
+                greenTokens: List<String>,
+                yellowTokens: List<String>,
+                redTokens: List<String>
+            ) {
+                fun addRules(
+                    tokens: List<String>,
+                    bgRed: Float, bgGreen: Float, bgBlue: Float,
+                    textRed: Float, textGreen: Float, textBlue: Float
+                ) {
+                    tokens.forEach { token ->
+                        batchRequests.put(createConditionalFormatRule(
+                            sheetId = sheetId,
+                            startRow = startRow, endRow = 1000, startCol = column, endCol = column + 1,
+                            conditionType = "TEXT_CONTAINS", conditionValue = token,
+                            bgRed = bgRed, bgGreen = bgGreen, bgBlue = bgBlue,
+                            textRed = textRed, textGreen = textGreen, textBlue = textBlue,
+                            index = nextConditionalFormatIndex(sheetId)
+                        ))
+                    }
+                }
+
+                addRules(greenTokens, 0.92f, 0.96f, 0.93f, 0.08f, 0.45f, 0.20f)
+                addRules(yellowTokens, 1.0f, 0.98f, 0.90f, 0.80f, 0.40f, 0.00f)
+                addRules(redTokens, 0.99f, 0.93f, 0.93f, 0.77f, 0.13f, 0.12f)
+            }
 
             if ((!ringkasanHarianHasConditionalFormatting || ringkasanHarianSheetId?.let(conditionalFormatNeedsRepair::contains) == true) && ringkasanHarianSheetId != null) {
                 // Rule: "Sudah" -> Hijau Lembut
@@ -1351,7 +1398,7 @@ class GoogleSheetsSyncManager(
                     conditionType = "TEXT_EQ", conditionValue = "Sudah",
                     bgRed = 0.90f, bgGreen = 0.96f, bgBlue = 0.92f,
                     textRed = 0.08f, textGreen = 0.45f, textBlue = 0.20f,
-                    index = 0
+                    index = nextConditionalFormatIndex(ringkasanHarianSheetId)
                 ))
                 // Rule: "Belum" -> Merah Lembut
                 batchRequests.put(createConditionalFormatRule(
@@ -1360,48 +1407,27 @@ class GoogleSheetsSyncManager(
                     conditionType = "TEXT_EQ", conditionValue = "Belum",
                     bgRed = 0.99f, bgGreen = 0.91f, bgBlue = 0.91f,
                     textRed = 0.77f, textGreen = 0.13f, textBlue = 0.12f,
-                    index = 1
+                    index = nextConditionalFormatIndex(ringkasanHarianSheetId)
                 ))
             }
             if ((!ringkasanHarianHasTotalRules || ringkasanHarianSheetId?.let(conditionalFormatNeedsRepair::contains) == true) && ringkasanHarianSheetId != null) {
-                // Kolom 6 (Total Selesai): >= 80% Hijau Lembut
-                batchRequests.put(createConditionalFormatRule(
-                    sheetId = ringkasanHarianSheetId,
-                    startRow = 1, endRow = 1000, startCol = 6, endCol = 7,
-                    conditionType = "CUSTOM_FORMULA", conditionValue = apiConditionalFormula("=COUNTIF(B2:F2, \"Sudah*\")/5 >= 0.8"),
-                    bgRed = 0.92f, bgGreen = 0.96f, bgBlue = 0.93f,
-                    textRed = 0.08f, textGreen = 0.45f, textBlue = 0.20f,
-                    index = nextConditionalFormatIndex(ringkasanHarianSheetId)
-                ))
-                // Kolom 6 (Total Selesai): 50% - 79% Kuning/Oranye Lembut
-                batchRequests.put(createConditionalFormatRule(
-                    sheetId = ringkasanHarianSheetId,
-                    startRow = 1, endRow = 1000, startCol = 6, endCol = 7,
-                    conditionType = "CUSTOM_FORMULA", conditionValue = apiConditionalFormula("=COUNTIF(B2:F2, \"Sudah*\")/5 >= 0.5"),
-                    bgRed = 1.0f, bgGreen = 0.98f, bgBlue = 0.90f,
-                    textRed = 0.80f, textGreen = 0.40f, textBlue = 0.00f,
-                    index = nextConditionalFormatIndex(ringkasanHarianSheetId)
-                ))
-                // Kolom 6 (Total Selesai): < 50% Merah Lembut
-                batchRequests.put(createConditionalFormatRule(
-                    sheetId = ringkasanHarianSheetId,
-                    startRow = 1, endRow = 1000, startCol = 6, endCol = 7,
-                    conditionType = "CUSTOM_FORMULA", conditionValue = apiConditionalFormula("=AND(A2<>\"\", COUNTIF(B2:F2, \"Sudah*\")/5 < 0.5)"),
-                    bgRed = 0.99f, bgGreen = 0.93f, bgBlue = 0.93f,
-                    textRed = 0.77f, textGreen = 0.13f, textBlue = 0.12f,
-                    index = nextConditionalFormatIndex(ringkasanHarianSheetId)
-                ))
+                addTotalTextRules(
+                    ringkasanHarianSheetId, startRow = 1, column = 6,
+                    greenTokens = greenCompletionTokens,
+                    yellowTokens = yellowCompletionTokens,
+                    redTokens = redCompletionTokens
+                )
             }
 
             // 8. Conditional Formatting Warna Lembut pada "Ringkasan Mingguan" (✓: Hijau, -: Merah, Total: Skala Persen)
             if (ringkasanMingguanSheetId != null &&
                 (ringkasanMingguanSheetId?.let(conditionalFormatNeedsRepair::contains) == true ||
-                    !hasConditionalFormatRule(conditionalFormatsBySheet[ringkasanMingguanSheetId], 3, "TEXT_EQ", "✓"))) {
+                    !hasConditionalFormatRule(conditionalFormatsBySheet[ringkasanMingguanSheetId], 3, "TEXT_EQ", checkMark))) {
                 // Rule: "✓" -> Hijau Lembut
                 batchRequests.put(createConditionalFormatRule(
                     sheetId = ringkasanMingguanSheetId,
                     startRow = 2, endRow = 1000, startCol = 3, endCol = 38,
-                    conditionType = "TEXT_EQ", conditionValue = "✓",
+                    conditionType = "TEXT_EQ", conditionValue = checkMark,
                     bgRed = 0.90f, bgGreen = 0.96f, bgBlue = 0.92f,
                     textRed = 0.08f, textGreen = 0.45f, textBlue = 0.20f,
                     index = nextConditionalFormatIndex(ringkasanMingguanSheetId)
@@ -1421,33 +1447,12 @@ class GoogleSheetsSyncManager(
                 ))
             }
             if ((!ringkasanMingguanHasTotalRules || ringkasanMingguanSheetId?.let(conditionalFormatNeedsRepair::contains) == true) && ringkasanMingguanSheetId != null) {
-                // Kolom 38 (Total Selesai): >= 80% Hijau Lembut
-                batchRequests.put(createConditionalFormatRule(
-                    sheetId = ringkasanMingguanSheetId,
-                    startRow = 2, endRow = 1000, startCol = 38, endCol = 39,
-                    conditionType = "CUSTOM_FORMULA", conditionValue = apiConditionalFormula("=AND((COUNTIF(D3:AL3, \"✓\") + COUNTIF(D3:AL3, \"-\")) > 0, (COUNTIF(D3:AL3, \"✓\") / (COUNTIF(D3:AL3, \"✓\") + COUNTIF(D3:AL3, \"-\"))) >= 0.8)"),
-                    bgRed = 0.92f, bgGreen = 0.96f, bgBlue = 0.93f,
-                    textRed = 0.08f, textGreen = 0.45f, textBlue = 0.20f,
-                    index = nextConditionalFormatIndex(ringkasanMingguanSheetId)
-                ))
-                // Kolom 38 (Total Selesai): 50% - 79% Kuning/Oranye Lembut
-                batchRequests.put(createConditionalFormatRule(
-                    sheetId = ringkasanMingguanSheetId,
-                    startRow = 2, endRow = 1000, startCol = 38, endCol = 39,
-                    conditionType = "CUSTOM_FORMULA", conditionValue = apiConditionalFormula("=AND((COUNTIF(D3:AL3, \"✓\") + COUNTIF(D3:AL3, \"-\")) > 0, (COUNTIF(D3:AL3, \"✓\") / (COUNTIF(D3:AL3, \"✓\") + COUNTIF(D3:AL3, \"-\"))) >= 0.5)"),
-                    bgRed = 1.0f, bgGreen = 0.98f, bgBlue = 0.90f,
-                    textRed = 0.80f, textGreen = 0.40f, textBlue = 0.00f,
-                    index = nextConditionalFormatIndex(ringkasanMingguanSheetId)
-                ))
-                // Kolom 38 (Total Selesai): < 50% Merah Lembut
-                batchRequests.put(createConditionalFormatRule(
-                    sheetId = ringkasanMingguanSheetId,
-                    startRow = 2, endRow = 1000, startCol = 38, endCol = 39,
-                    conditionType = "CUSTOM_FORMULA", conditionValue = apiConditionalFormula("=AND((COUNTIF(D3:AL3, \"✓\") + COUNTIF(D3:AL3, \"-\")) > 0, (COUNTIF(D3:AL3, \"✓\") / (COUNTIF(D3:AL3, \"✓\") + COUNTIF(D3:AL3, \"-\"))) < 0.5)"),
-                    bgRed = 0.99f, bgGreen = 0.93f, bgBlue = 0.93f,
-                    textRed = 0.77f, textGreen = 0.13f, textBlue = 0.12f,
-                    index = nextConditionalFormatIndex(ringkasanMingguanSheetId)
-                ))
+                addTotalTextRules(
+                    ringkasanMingguanSheetId, startRow = 2, column = 38,
+                    greenTokens = greenPercentageTokens,
+                    yellowTokens = yellowPercentageTokens,
+                    redTokens = redPercentageTokens
+                )
             }
 
             // 9. Conditional Formatting Warna Lembut pada "Rekap Waktu" (Qadha: Oranye, Tepat Waktu: Hijau, Belum: Merah, Total: Skala Persen)
@@ -1459,7 +1464,7 @@ class GoogleSheetsSyncManager(
                     conditionType = "TEXT_CONTAINS", conditionValue = "Qadha",
                     bgRed = 1.0f, bgGreen = 0.95f, bgBlue = 0.82f,
                     textRed = 0.80f, textGreen = 0.40f, textBlue = 0.05f,
-                    index = 0
+                    index = nextConditionalFormatIndex(rekapWaktuSheetId)
                 ))
                 // Rule 2: Ada jam (berisi tanda ":") -> Hijau Lembut
                 batchRequests.put(createConditionalFormatRule(
@@ -1468,7 +1473,7 @@ class GoogleSheetsSyncManager(
                     conditionType = "TEXT_CONTAINS", conditionValue = ":",
                     bgRed = 0.90f, bgGreen = 0.96f, bgBlue = 0.92f,
                     textRed = 0.08f, textGreen = 0.45f, textBlue = 0.20f,
-                    index = 1
+                    index = nextConditionalFormatIndex(rekapWaktuSheetId)
                 ))
                 // Rule 3: "Belum" -> Merah Lembut
                 batchRequests.put(createConditionalFormatRule(
@@ -1477,37 +1482,16 @@ class GoogleSheetsSyncManager(
                     conditionType = "TEXT_EQ", conditionValue = "Belum",
                     bgRed = 0.99f, bgGreen = 0.91f, bgBlue = 0.91f,
                     textRed = 0.77f, textGreen = 0.13f, textBlue = 0.12f,
-                    index = 2
+                    index = nextConditionalFormatIndex(rekapWaktuSheetId)
                 ))
             }
             if ((!rekapWaktuHasTotalRules || rekapWaktuSheetId?.let(conditionalFormatNeedsRepair::contains) == true) && rekapWaktuSheetId != null) {
-                // Kolom 6 (Total Selesai): >= 80% Hijau Lembut
-                batchRequests.put(createConditionalFormatRule(
-                    sheetId = rekapWaktuSheetId,
-                    startRow = 1, endRow = 1000, startCol = 6, endCol = 7,
-                    conditionType = "CUSTOM_FORMULA", conditionValue = apiConditionalFormula("=COUNTIF(B2:F2, \"<>Belum\")/5 >= 0.8"),
-                    bgRed = 0.92f, bgGreen = 0.96f, bgBlue = 0.93f,
-                    textRed = 0.08f, textGreen = 0.45f, textBlue = 0.20f,
-                    index = nextConditionalFormatIndex(rekapWaktuSheetId)
-                ))
-                // Kolom 6 (Total Selesai): 50% - 79% Kuning/Oranye Lembut
-                batchRequests.put(createConditionalFormatRule(
-                    sheetId = rekapWaktuSheetId,
-                    startRow = 1, endRow = 1000, startCol = 6, endCol = 7,
-                    conditionType = "CUSTOM_FORMULA", conditionValue = apiConditionalFormula("=COUNTIF(B2:F2, \"<>Belum\")/5 >= 0.5"),
-                    bgRed = 1.0f, bgGreen = 0.98f, bgBlue = 0.90f,
-                    textRed = 0.80f, textGreen = 0.40f, textBlue = 0.00f,
-                    index = nextConditionalFormatIndex(rekapWaktuSheetId)
-                ))
-                // Kolom 6 (Total Selesai): < 50% Merah Lembut
-                batchRequests.put(createConditionalFormatRule(
-                    sheetId = rekapWaktuSheetId,
-                    startRow = 1, endRow = 1000, startCol = 6, endCol = 7,
-                    conditionType = "CUSTOM_FORMULA", conditionValue = apiConditionalFormula("=AND(A2<>\"\", COUNTIF(B2:F2, \"<>Belum\")/5 < 0.5)"),
-                    bgRed = 0.99f, bgGreen = 0.93f, bgBlue = 0.93f,
-                    textRed = 0.77f, textGreen = 0.13f, textBlue = 0.12f,
-                    index = nextConditionalFormatIndex(rekapWaktuSheetId)
-                ))
+                addTotalTextRules(
+                    rekapWaktuSheetId, startRow = 1, column = 6,
+                    greenTokens = greenCompletionTokens,
+                    yellowTokens = yellowCompletionTokens,
+                    redTokens = redCompletionTokens
+                )
             }
 
             // 10. Conditional Formatting Warna Lembut pada "Data Mentah".
@@ -1518,9 +1502,12 @@ class GoogleSheetsSyncManager(
                 val rawRulesNeedSetup = sheetId in conditionalFormatNeedsRepair ||
                     !hasConditionalFormatRule(rawRules, 6, "TEXT_EQ", "Sudah") ||
                     !hasConditionalFormatRule(rawRules, 6, "TEXT_EQ", "Belum") ||
-                    !hasConditionalFormatRule(rawRules, 7, "CUSTOM_FORMULA", "=OR(H2=\"Tepat Waktu\", H2=\"Tepat Waktu (Awal Waktu)\")") ||
-                    !hasConditionalFormatRule(rawRules, 7, "CUSTOM_FORMULA", "=OR(H2=\"Akhir Waktu\", H2=\"Sebelum Waktu Masuk\", H2=\"Qadha Selesai\")") ||
-                    !hasConditionalFormatRule(rawRules, 7, "CUSTOM_FORMULA", "=OR(H2=\"Belum Salat\", H2=\"Terlewat (Belum Qadha)\")")
+                    !hasConditionalFormatRule(rawRules, 7, "TEXT_CONTAINS", "Tepat Waktu") ||
+                    !hasConditionalFormatRule(rawRules, 7, "TEXT_EQ", "Akhir Waktu") ||
+                    !hasConditionalFormatRule(rawRules, 7, "TEXT_EQ", "Sebelum Waktu Masuk") ||
+                    !hasConditionalFormatRule(rawRules, 7, "TEXT_EQ", "Qadha Selesai") ||
+                    !hasConditionalFormatRule(rawRules, 7, "TEXT_EQ", "Belum Salat") ||
+                    !hasConditionalFormatRule(rawRules, 7, "TEXT_EQ", "Terlewat (Belum Qadha)")
 
                 if (!rawRulesNeedSetup) return@let
 
@@ -1535,7 +1522,7 @@ class GoogleSheetsSyncManager(
                         sheetId = sheetId,
                         startRow = 1, endRow = 1000, startCol = colIndex, endCol = colIndex + 1,
                         conditionType = conditionType,
-                        conditionValue = if (conditionType == "CUSTOM_FORMULA") apiConditionalFormula(conditionValue) else conditionValue,
+                        conditionValue = conditionValue,
                         bgRed = bgRed, bgGreen = bgGreen, bgBlue = bgBlue,
                         textRed = textRed, textGreen = textGreen, textBlue = textBlue,
                         index = nextConditionalFormatIndex(sheetId)
@@ -1546,42 +1533,23 @@ class GoogleSheetsSyncManager(
                 addDataMentahRule(6, "TEXT_EQ", "Sudah", 0.90f, 0.96f, 0.92f, 0.08f, 0.45f, 0.20f)
                 addDataMentahRule(6, "TEXT_EQ", "Belum", 0.99f, 0.91f, 0.91f, 0.77f, 0.13f, 0.12f)
 
-                // Keterangan (Col 7): Menggunakan CUSTOM_FORMULA agar 100% konsisten & anti-bug text matching di Google Sheets
-                // Rule 2: Hijau Lembut untuk Tepat Waktu & Awal Waktu
-                addDataMentahRule(7, "CUSTOM_FORMULA", "=OR(H2=\"Tepat Waktu\", H2=\"Tepat Waktu (Awal Waktu)\")", 0.90f, 0.96f, 0.92f, 0.08f, 0.45f, 0.20f)
-
-                // Rule 3: Oranye Lembut untuk Akhir Waktu, Sebelum Waktu Masuk, & Qadha Selesai
-                addDataMentahRule(7, "CUSTOM_FORMULA", "=OR(H2=\"Akhir Waktu\", H2=\"Sebelum Waktu Masuk\", H2=\"Qadha Selesai\")", 1.0f, 0.95f, 0.82f, 0.80f, 0.40f, 0.05f)
-
-                // Rule 4: Merah Lembut untuk Belum Salat & Terlewat (Belum Qadha)
-                addDataMentahRule(7, "CUSTOM_FORMULA", "=OR(H2=\"Belum Salat\", H2=\"Terlewat (Belum Qadha)\")", 0.99f, 0.91f, 0.91f, 0.77f, 0.13f, 0.12f)
+                // Keterangan (Col 7): kondisi teks bawaan API, stabil di semua locale.
+                // "Tepat Waktu" juga mencakup "Tepat Waktu (Awal Waktu)".
+                addDataMentahRule(7, "TEXT_CONTAINS", "Tepat Waktu", 0.90f, 0.96f, 0.92f, 0.08f, 0.45f, 0.20f)
+                addDataMentahRule(7, "TEXT_EQ", "Akhir Waktu", 1.0f, 0.95f, 0.82f, 0.80f, 0.40f, 0.05f)
+                addDataMentahRule(7, "TEXT_EQ", "Sebelum Waktu Masuk", 1.0f, 0.95f, 0.82f, 0.80f, 0.40f, 0.05f)
+                addDataMentahRule(7, "TEXT_EQ", "Qadha Selesai", 1.0f, 0.95f, 0.82f, 0.80f, 0.40f, 0.05f)
+                addDataMentahRule(7, "TEXT_EQ", "Belum Salat", 0.99f, 0.91f, 0.91f, 0.77f, 0.13f, 0.12f)
+                addDataMentahRule(7, "TEXT_EQ", "Terlewat (Belum Qadha)", 0.99f, 0.91f, 0.91f, 0.77f, 0.13f, 0.12f)
             }
 
-            // Rule teks sederhana (✓, -, Sudah, Belum) diprioritaskan. Formula custom
-            // seperti perhitungan total dikirim setelahnya supaya jika formula itu gagal,
-            // warna ceklis dan status tetap terpasang.
-            val simpleFormatRules = JSONArray()
-            val customFormulaRules = JSONArray()
-            for (index in 0 until batchRequests.length()) {
-                val request = batchRequests.getJSONObject(index)
-                val conditionType = request
-                    .optJSONObject("addConditionalFormatRule")
-                    ?.optJSONObject("rule")
-                    ?.optJSONObject("booleanRule")
-                    ?.optJSONObject("condition")
-                    ?.optString("type")
-                if (conditionType == "CUSTOM_FORMULA") {
-                    customFormulaRules.put(request)
-                } else {
-                    simpleFormatRules.put(request)
-                }
+            if (!submitFormattingBatch(batchRequests, "warna spreadsheet")) {
+                throw IllegalStateException("Google Sheets menolak pembaruan warna")
             }
-            submitFormattingBatch(simpleFormatRules, "warna status dan ceklis")
-            submitFormattingBatch(customFormulaRules, "warna formula lanjutan")
             return sep
         } catch (e: Exception) {
-            e.printStackTrace()
-            return sep
+            android.util.Log.e("GoogleSheetsSync", "Gagal memperbarui format spreadsheet", e)
+            throw e
         }
     }
 
@@ -1787,11 +1755,12 @@ class GoogleSheetsSyncManager(
                         when (title) {
                             "Ringkasan Harian", "Ringkasan" -> {
                                 val endR = maxOf(ringkasanRowCount, 2)
-                                // Kolom 0 (Tanggal): background #FAFAFA, text #202124, DATE pattern
+                                // Kolom 0 (Tanggal): biru muda yang jelas terlihat,
+                                // bukan #FAFAFA yang tampak seperti putih biasa.
                                 batchRequests.put(createColumnStyleRequest(
                                     sheetId = sId, startCol = 0, startRow = 1, endRow = endR,
-                                    bgRed = 0.98f, bgGreen = 0.98f, bgBlue = 0.98f,
-                                    textRed = 0.13f, textGreen = 0.13f, textBlue = 0.14f,
+                                    bgRed = 0.91f, bgGreen = 0.96f, bgBlue = 1.0f,
+                                    textRed = 0.10f, textGreen = 0.30f, textBlue = 0.58f,
                                     numberFormatType = "DATE", numberFormatPattern = "d MMMM yyyy"
                                 ))
                                 // Kolom 6 (Selesai): center (warna diatur Conditional Formatting)
@@ -1839,11 +1808,12 @@ class GoogleSheetsSyncManager(
                             }
                             "Rekap Waktu" -> {
                                 val endR = maxOf(rekapWaktuRowCount, 2)
-                                // Kolom 0 (Tanggal): background #FAFAFA, text #202124, DATE pattern
+                                // Kolom 0 (Tanggal): biru muda yang jelas terlihat,
+                                // bukan #FAFAFA yang tampak seperti putih biasa.
                                 batchRequests.put(createColumnStyleRequest(
                                     sheetId = sId, startCol = 0, startRow = 1, endRow = endR,
-                                    bgRed = 0.98f, bgGreen = 0.98f, bgBlue = 0.98f,
-                                    textRed = 0.13f, textGreen = 0.13f, textBlue = 0.14f,
+                                    bgRed = 0.91f, bgGreen = 0.96f, bgBlue = 1.0f,
+                                    textRed = 0.10f, textGreen = 0.30f, textBlue = 0.58f,
                                     numberFormatType = "DATE", numberFormatPattern = "d MMMM yyyy"
                                 ))
                                 // Kolom 1..5 (Salat): center & middle, TEXT
